@@ -2,10 +2,11 @@
 // 会話の中核ロジック。web_hearing の handleText.ts に相当（MVP向けに簡素化）。
 // フロー(スロット)を順に尋ね、deepen対象は薄い回答のときだけAIで1回追加質問する。
 import { getFlow, DEFAULT_FLOW_ID, type Flow, type Slot } from "./flows";
-import { proposeFollowup, assessAnswer } from "./aiDeepen";
+import { proposeFollowup, assessAnswer, assessOverall } from "./aiDeepen";
 import { streamKnowledgeAnswer } from "./intent";
 import { streamUnsureAssist } from "./assist";
 import { classifyTurn, type Classification } from "./harness/classify";
+import { aiStatus, type AiUnavailableReason } from "./harness/aiRuntime";
 import { FALLBACK_ANSWER } from "./knowledge";
 import { computeCoverage, getAxisById, type Coverage } from "./coverage";
 import { proposeGapQuestion } from "./gapfill";
@@ -17,19 +18,36 @@ export const SKIP_COMMAND = "__skip__";
 /** スキップ時に保存する回答値 */
 const SKIP_ANSWER = "特になし";
 
-/** 深掘りの上限往復数（これを超えたら十分性に関わらず前進） */
+/**
+ * 深掘りの安全上限（暴走防止）。掘るかどうかは基本AIの十分性判断（assessAnswer）に委ね、
+ * これを超えたときだけ十分性に関わらず前進する（0で深掘り無効）。
+ */
 const MAX_DEEPEN_ROUNDS = Math.max(
   0,
-  Number(process.env.AI_DEEPEN_MAX_ROUNDS ?? "2")
+  Number(process.env.AI_DEEPEN_MAX_ROUNDS ?? "3")
 );
 
 /**
- * 終盤に、手薄な観点を補う「開かれた質問」を出す上限回数。
- * 自由会話を固定質問だらけにしないため、少なめに抑える（0で無効）。
+ * 終盤の観点補完の「安全上限」。
+ * 続けるかどうかは基本AIの判断（covered）とカバレッジの偏り解消（balanced）に委ね、
+ * これは暴走防止のための最大回数だけを担う（0で観点補完そのものを無効化）。
  */
 const GAPFILL_MAX = Math.max(
   0,
-  Number(process.env.AI_GAPFILL_MAX_QUESTIONS ?? "2")
+  Number(process.env.AI_GAPFILL_MAX_QUESTIONS ?? "4")
+);
+
+/**
+ * AI主導の早期ラップアップ（会話全体が十分なら、残りの質問があっても締める）。
+ *  - 有効/無効: AI_WRAPUP_ENABLED（既定 on）
+ *  - 早すぎる終了を避けるため、主要スロットを最低 AI_WRAPUP_MIN_SLOTS 件
+ *    回答してから判定する（既定5）。
+ */
+const WRAPUP_ENABLED =
+  (process.env.AI_WRAPUP_ENABLED ?? "true").toLowerCase() !== "false";
+const WRAPUP_MIN_SLOTS = Math.max(
+  1,
+  Number(process.env.AI_WRAPUP_MIN_SLOTS ?? "5")
 );
 
 /** ギャップ補完の回答へ返す軽い相づち（連発を避けて自然に） */
@@ -94,6 +112,10 @@ export type Meta = {
   deepenRound: number;
   /** 観点ごとの充足度・均等度（取れたデータから数式で算出。AI不使用） */
   coverage: Coverage;
+  /** AIが全体として利用可能か（false のとき定型フローで進行中） */
+  aiAvailable: boolean;
+  /** AIが使えない理由（UI表示用。ok=利用可能） */
+  aiReason: AiUnavailableReason;
 };
 
 export type TurnResult = {
@@ -129,6 +151,11 @@ function metaOf(state: State): Meta {
     deepenRound: state.pendingFollowup?.round ?? 0,
     // 取れたデータからの観点バランス計算（純粋関数・AI不使用＝ストリーミング後段で軽量に算出）
     coverage: computeCoverage(state, flow),
+    // AIの利用可否（鍵なし／429・ネットワーク等のバックオフ中は false）
+    ...(() => {
+      const s = aiStatus();
+      return { aiAvailable: s.available, aiReason: s.reason };
+    })(),
   };
 }
 
@@ -329,6 +356,13 @@ async function advanceAndAskStream(
   const head = ack?.trim() ? ack.trim() : ackLine(answered);
 
   if (state.currentIndex < flow.slots.length) {
+    // AI主導の早期ラップアップ判定（全体として十分なら、残りがあっても締めへ分岐）
+    const wrap = await maybeWrapUp(state, flow);
+    if (wrap) {
+      const closeHead = wrap.trim() ? `${head}\n\n${wrap.trim()}` : head;
+      return doneStream(state, flow, emit, closeHead);
+    }
+
     const next = flow.slots[state.currentIndex];
     const out = `${head}\n\n${renderQuestion(next)}`;
     state.lastBotText = out;
@@ -338,6 +372,38 @@ async function advanceAndAskStream(
 
   // 主要スロット完了 → 終盤の観点ギャップ補完を検討
   return finishOrGapfillStream(state, flow, emit, head);
+}
+
+/** 回答済みの主要スロット数（実質的な回答があるもの） */
+function answeredMainCount(state: State, flow: Flow): number {
+  let n = 0;
+  for (const s of flow.slots) {
+    const raw = state.answers[s.key]?.raw?.trim();
+    if (raw) n += 1;
+  }
+  return n;
+}
+
+/**
+ * 会話全体が十分かをAIに尋ね、十分なら締めの一言を返す（=早期ラップアップ）。
+ * 続ける場合は null。早すぎる終了・無駄なAI呼び出しを避けるためのガード付き。
+ * @returns 締める場合の一言（AIのnote。無ければ既定文）／続ける場合は null
+ */
+async function maybeWrapUp(state: State, flow: Flow): Promise<string | null> {
+  if (!WRAPUP_ENABLED) return null;
+  if (answeredMainCount(state, flow) < WRAPUP_MIN_SLOTS) return null;
+
+  // まだ尋ねていない主要質問のラベル（現在位置以降）
+  const remaining = flow.slots
+    .slice(state.currentIndex)
+    .map((s) => s.label);
+
+  const r = await assessOverall({
+    context: collectedContext(state, flow),
+    remaining,
+  });
+  if (!r.done) return null;
+  return r.note || "ここまでで、お話の要点は十分に伺えました。";
 }
 
 /** 会話を締める（サマリ＋締め文）。これ以上の補完はしない。 */
@@ -356,10 +422,12 @@ function doneStream(
 }
 
 /**
- * 終盤、手薄な観点があれば「開かれた質問」で1つだけ補い、無ければ締める。
- * - 自由会話を固定質問だらけにしないため、上限（GAPFILL_MAX）を設ける。
- * - すでに会話で語られている観点はAIが covered と判断 → 聞かずに次/締めへ。
- * - AI不可/失敗時はそのまま締める（無理に固定質問を足さない）。
+ * 終盤の観点補完。続けるかは“AI主導”で決める（システム側の数値ゲートは最小化）:
+ * - 締めるのは次のいずれか: ①安全上限に到達 ②カバレッジの偏りが解消（balanced）
+ *   ③AIが「もう十分語られている（covered）」と判断 ④AI不可/失敗。
+ * - カバレッジの数値は「どの観点を優先して聞くか」のヒントとしてのみ使う
+ *   （= 最も手薄な観点 weakestAxisId を選ぶ。<0.5 の固定ゲートは廃止）。
+ * - 自由会話で既に語られていればAIが covered=true を返すので、無理に固定質問を足さない。
  */
 async function finishOrGapfillStream(
   state: State,
@@ -368,40 +436,37 @@ async function finishOrGapfillStream(
   head: string
 ): Promise<TurnResult> {
   const asked = state.gapfillAsked ?? 0;
-  if (asked < GAPFILL_MAX) {
-    const cov = computeCoverage(state, flow);
-    if (cov.gaps.length > 0) {
-      // 最も手薄なギャップ観点を優先。スロットが実在するものに限る。
-      const axisId =
-        cov.weakestAxisId && cov.gaps.includes(cov.weakestAxisId)
-          ? cov.weakestAxisId
-          : cov.gaps[0];
-      const axis = getAxisById(axisId);
-      const slotKey = axis?.slots.find((k) =>
-        flow.slots.some((s) => s.key === k)
-      );
-      if (axis && slotKey) {
-        const gq = await proposeGapQuestion({
-          axisLabel: axis.label,
-          context: collectedContext(state, flow),
-        });
-        if (!gq.covered && gq.ask) {
-          state.gapfillAsked = asked + 1;
-          state.pendingFollowup = {
-            key: slotKey,
-            question: gq.ask,
-            round: 0,
-            kind: "gapfill",
-          };
-          const out = `${head}\n\n${gq.ask}`;
-          state.lastBotText = out;
-          emit(out);
-          return { outText: out, meta: metaOf(state) };
-        }
-      }
-    }
-  }
-  return doneStream(state, flow, emit, head);
+
+  // 安全上限（暴走防止）に達していれば締める。
+  if (asked >= GAPFILL_MAX) return doneStream(state, flow, emit, head);
+
+  const cov = computeCoverage(state, flow);
+  // 偏りが解消していれば（まんべんなく取れていれば）これ以上は聞かない。
+  if (cov.balanced) return doneStream(state, flow, emit, head);
+
+  // 最も手薄な観点を“ヒント”として選ぶ（実在スロットに対応するものに限る）。
+  const axis = getAxisById(cov.weakestAxisId);
+  const slotKey = axis?.slots.find((k) => flow.slots.some((s) => s.key === k));
+  if (!axis || !slotKey) return doneStream(state, flow, emit, head);
+
+  // 聞くかどうかの最終判断はAIに委ねる（既出なら covered=true で締めへ）。
+  const gq = await proposeGapQuestion({
+    axisLabel: axis.label,
+    context: collectedContext(state, flow),
+  });
+  if (gq.covered || !gq.ask) return doneStream(state, flow, emit, head);
+
+  state.gapfillAsked = asked + 1;
+  state.pendingFollowup = {
+    key: slotKey,
+    question: gq.ask,
+    round: 0,
+    kind: "gapfill",
+  };
+  const out = `${head}\n\n${gq.ask}`;
+  state.lastBotText = out;
+  emit(out);
+  return { outText: out, meta: metaOf(state) };
 }
 
 /**

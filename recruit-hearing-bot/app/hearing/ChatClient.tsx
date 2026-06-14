@@ -36,6 +36,8 @@ type Meta = {
   totalSlots: number;
   inFollowup: boolean;
   coverage?: Coverage;
+  aiAvailable?: boolean;
+  aiReason?: "ok" | "no_key" | "backoff";
 };
 
 type Progress = {
@@ -44,6 +46,8 @@ type Progress = {
   inFollowup: boolean;
   mode: Meta["mode"];
   coverage: Coverage | null;
+  aiAvailable: boolean;
+  aiReason: "ok" | "no_key" | "backoff";
 };
 
 const RESET_COMMAND = "__reset__";
@@ -216,6 +220,8 @@ export default function ChatClient() {
     inFollowup: false,
     mode: "idle",
     coverage: null,
+    aiAvailable: true,
+    aiReason: "ok",
   });
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -237,6 +243,8 @@ export default function ChatClient() {
       inFollowup: !!meta.inFollowup,
       mode: meta.mode ?? "idle",
       coverage: (meta.coverage as Coverage) ?? null,
+      aiAvailable: meta.aiAvailable !== false,
+      aiReason: (meta.aiReason as Progress["aiReason"]) ?? "ok",
     });
   }, []);
 
@@ -456,6 +464,32 @@ export default function ChatClient() {
           </div>
         )}
       </div>
+
+      {/* AIが使えないときの案内（鍵なし／429・ネットワーク等でバックオフ中） */}
+      {!progress.aiAvailable && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 8,
+            padding: "8px 10px",
+            borderRadius: 10,
+            background: "#fffbeb",
+            border: "1px solid #fde68a",
+            color: "#92400e",
+            fontSize: 12,
+            lineHeight: 1.5,
+          }}
+          role="status"
+        >
+          <span aria-hidden style={{ fontWeight: 700 }}>!</span>
+          <span>
+            {progress.aiReason === "no_key"
+              ? "現在AIによる応答機能が無効です。定型のご質問でお伺いします（ご回答は問題なく記録されます）。"
+              : "現在、AIによる応答が一時的に利用しづらい状況です。復旧するまで定型のご質問でお伺いします（ご回答は問題なく記録されます）。"}
+          </span>
+        </div>
+      )}
 
       {/* 観点バランス（取れたデータから数式で算出） */}
       <CoveragePanel coverage={progress.coverage} />

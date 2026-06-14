@@ -7,7 +7,12 @@
 //   - 成功/失敗の記録（回路へフィードバック）
 // を一元化する。テキスト生成（runText）とストリーム生成（runStream）に対応。
 import { generateText, generateTextStream, hasGemini } from "../gemini";
-import { circuits, type AiFailType, type CircuitName } from "./circuit";
+import {
+  circuits,
+  networkGuard,
+  type AiFailType,
+  type CircuitName,
+} from "./circuit";
 
 const TIMEOUT_MS = Number(process.env.AI_TIMEOUT_MS ?? "10000");
 const SLOW_MS = Number(process.env.AI_SLOW_MS ?? "6000");
@@ -46,32 +51,74 @@ function logJson(
 
 /** 例外メッセージから失敗種別を推定する。 */
 export function classifyAiError(e: unknown): { type: AiFailType; message: string } {
-  const msg = e instanceof Error ? e.message : String(e);
+  // fetch失敗時は cause 側に実エラー（ENOTFOUND等）が入ることが多いので両方見る。
+  const err = e as { message?: unknown; cause?: { message?: unknown; code?: unknown } };
+  const causeMsg =
+    err?.cause && typeof err.cause === "object"
+      ? `${err.cause.code ?? ""} ${err.cause.message ?? ""}`
+      : "";
+  const msg = (e instanceof Error ? e.message : String(e)) + " " + causeMsg;
   const m = msg.toLowerCase();
   if (m.includes("timeout") || m.includes("aborted") || m.includes("abort"))
-    return { type: "timeout", message: msg };
+    return { type: "timeout", message: msg.trim() };
+  // ネットワーク障害（DNS/接続不可/切断など）。固定質問フォールバックへ素早く倒す対象。
+  if (
+    m.includes("fetch failed") ||
+    m.includes("network") ||
+    m.includes("enotfound") ||
+    m.includes("eai_again") ||
+    m.includes("econnrefused") ||
+    m.includes("econnreset") ||
+    m.includes("epipe") ||
+    m.includes("etimedout") ||
+    m.includes("ehostunreach") ||
+    m.includes("enetunreach") ||
+    m.includes("getaddrinfo") ||
+    m.includes("socket hang up") ||
+    m.includes("und_err") ||
+    m.includes("dns")
+  )
+    return { type: "network", message: msg.trim() };
   if (
     m.includes("401") ||
     m.includes("403") ||
     m.includes("api key") ||
     m.includes("permission")
   )
-    return { type: "auth", message: msg };
+    return { type: "auth", message: msg.trim() };
   if (
     m.includes("429") ||
     m.includes("rate") ||
     m.includes("quota") ||
     m.includes("resource_exhausted")
   )
-    return { type: "rate", message: msg };
+    return { type: "rate", message: msg.trim() };
   if (
     m.includes("500") ||
     m.includes("502") ||
     m.includes("503") ||
     m.includes("504")
   )
-    return { type: "server", message: msg };
-  return { type: "unknown", message: msg };
+    return { type: "server", message: msg.trim() };
+  return { type: "unknown", message: msg.trim() };
+}
+
+/** バックオフ上限（暴走的に長い待ちを避ける）。 */
+const MAX_BACKOFF_MS = Number(process.env.AI_MAX_BACKOFF_MS ?? "3600000"); // 1h
+
+/**
+ * 429等のエラーメッセージから「再試行までの待ち時間(ms)」を抽出する。
+ * 例: "retryDelay":"35s" / "Please retry in 35.9s" / retryDelay: 35s
+ * 取れなければ undefined。上限は MAX_BACKOFF_MS でクランプ。
+ */
+export function parseRetryAfterMs(message: string): number | undefined {
+  const m = String(message ?? "").toLowerCase();
+  let mm = m.match(/retrydelay"?\s*:?\s*"?(\d+(?:\.\d+)?)\s*s/);
+  if (!mm) mm = m.match(/retry(?:\s+in|-after)?\s*[:=]?\s*(\d+(?:\.\d+)?)\s*s/);
+  if (!mm) return undefined;
+  const sec = parseFloat(mm[1]);
+  if (!Number.isFinite(sec) || sec <= 0) return undefined;
+  return Math.min(MAX_BACKOFF_MS, Math.ceil(sec * 1000));
 }
 
 function withTimeout<T>(p: Promise<T>, ms: number, signal: AbortSignal): Promise<T> {
@@ -98,9 +145,27 @@ export type AiRunResult<T> =
   | { ok: true; value: T; elapsedMs: number }
   | { ok: false; reason: "no_key" | "bypassed" | AiFailType; elapsedMs: number };
 
-/** AIが利用可能か（鍵あり＆その回路が遮断中でない） */
+/** AIが利用可能か（鍵あり＆その回路が遮断中でない＆ネットワーク障害中でない） */
 export function aiReady(circuit: CircuitName): boolean {
-  return hasGemini() && !circuits[circuit].shouldBypass();
+  return (
+    hasGemini() &&
+    !networkGuard.shouldBypass() &&
+    !circuits[circuit].shouldBypass()
+  );
+}
+
+/** AIが全体として使えない理由（UI表示用）。使える場合は "ok"。 */
+export type AiUnavailableReason = "ok" | "no_key" | "backoff";
+
+/**
+ * AIの全体的な利用可否（ユーザー向けの状態表示用）。
+ *  - no_key  : APIキー未設定（AI機能そのものが無効）
+ *  - backoff : ネットワーク障害/レート制限(429)/認証失敗で一時的に全AIを停止中
+ */
+export function aiStatus(): { available: boolean; reason: AiUnavailableReason } {
+  if (!hasGemini()) return { available: false, reason: "no_key" };
+  if (networkGuard.shouldBypass()) return { available: false, reason: "backoff" };
+  return { available: true, reason: "ok" };
 }
 
 /**
@@ -121,8 +186,13 @@ export async function runText(
 ): Promise<AiRunResult<string>> {
   const t0 = Date.now();
   if (!hasGemini()) return { ok: false, reason: "no_key", elapsedMs: 0 };
-  if (circuits[circuit].shouldBypass()) {
-    logJson("info", { event: "ai_bypass", phase, circuit });
+  if (networkGuard.shouldBypass() || circuits[circuit].shouldBypass()) {
+    logJson("info", {
+      event: "ai_bypass",
+      phase,
+      circuit,
+      network: networkGuard.shouldBypass(),
+    });
     return { ok: false, reason: "bypassed", elapsedMs: 0 };
   }
 
@@ -149,9 +219,10 @@ export async function runText(
   } catch (e) {
     ac.abort();
     const { type, message } = classifyAiError(e);
-    circuits[circuit].recordFailure(type, message);
+    const retryAfterMs = type === "rate" ? parseRetryAfterMs(message) : undefined;
+    circuits[circuit].recordFailure(type, message, retryAfterMs);
     const elapsedMs = Date.now() - t0;
-    logJson("warn", { event: "ai_error", phase, circuit, type, elapsedMs, message });
+    logJson("warn", { event: "ai_error", phase, circuit, type, elapsedMs, retryAfterMs, message });
     return { ok: false, reason: type, elapsedMs };
   }
 }
@@ -175,8 +246,13 @@ export async function runStream(
 ): Promise<AiRunResult<string>> {
   const t0 = Date.now();
   if (!hasGemini()) return { ok: false, reason: "no_key", elapsedMs: 0 };
-  if (circuits[circuit].shouldBypass()) {
-    logJson("info", { event: "ai_bypass", phase, circuit });
+  if (networkGuard.shouldBypass() || circuits[circuit].shouldBypass()) {
+    logJson("info", {
+      event: "ai_bypass",
+      phase,
+      circuit,
+      network: networkGuard.shouldBypass(),
+    });
     return { ok: false, reason: "bypassed", elapsedMs: 0 };
   }
 
@@ -208,9 +284,10 @@ export async function runStream(
     clearTimeout(timer);
     ac.abort();
     const { type, message } = classifyAiError(e);
-    circuits[circuit].recordFailure(type, message);
+    const retryAfterMs = type === "rate" ? parseRetryAfterMs(message) : undefined;
+    circuits[circuit].recordFailure(type, message, retryAfterMs);
     const elapsedMs = Date.now() - t0;
-    logJson("warn", { event: "ai_error", phase, circuit, type, elapsedMs, message });
+    logJson("warn", { event: "ai_error", phase, circuit, type, elapsedMs, retryAfterMs, message });
     // 途中まで出ていれば、それを value として返す（部分成功）
     if (acc) return { ok: true, value: acc, elapsedMs };
     return { ok: false, reason: type, elapsedMs };

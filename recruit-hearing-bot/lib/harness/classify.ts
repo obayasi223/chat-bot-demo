@@ -46,32 +46,52 @@ function decide(
 
 // --- ヒューリスティック用シグナル ---
 
-const QUESTION_HINTS = [
+// 強い疑問シグナル（高精度）。これがあれば質問とみなしてよい。
+// 文末の「か」系の疑問形・明示的な依頼表現に絞る。
+const STRONG_QUESTION = [
   "?",
   "？",
   "ですか",
-  "でしょうか",
   "ますか",
-  "教え",
+  "でしょうか",
+  "ありますか",
+  "いいですか",
+  "可能ですか",
+  "教えて",
+  "教えてください",
   "知りたい",
   "聞きたい",
+];
+
+// 弱い疑問シグナル（疑問詞）。埋め込み節などで誤検出しやすいので“曖昧”として扱う。
+// ※「どう」「なん」「何」単体は『〜かどうか』『何か』『なんとなく』等の平叙文に頻出するため入れない。
+//   （疑問詞として拾うときは「どうして」「何を」など、より具体的な形に限定する）
+const WEAK_QUESTION = [
   "なぜ",
+  "どうして",
   "どうやって",
-  "どう",
-  "どの",
   "どこ",
   "いつ",
   "いくら",
   "どれ",
   "どちら",
-  "何",
-  "なに",
-  // 注: 「できます」「ます」等の丁寧な語尾は通常の回答にも頻出するため含めない
-  //（疑問形は「ますか」「ですか」「でしょうか」で拾う）。
-  "とは何",
-  "方法は",
-  "理由は",
+  "どの",
+  "何を",
+  "何が",
+  "何で",
+  "なにを",
+  "なにが",
 ];
+
+/** 長い入力は埋め込み節に疑問詞が混じりやすい。これ未満のみ弱シグナルを採用する。 */
+const WEAK_QUESTION_MAXLEN = Number(process.env.CLASSIFY_WEAK_MAXLEN ?? "40");
+
+function hasStrongQuestion(t: string): boolean {
+  return STRONG_QUESTION.some((w) => t.includes(w));
+}
+function hasWeakQuestion(t: string): boolean {
+  return WEAK_QUESTION.some((w) => t.includes(w));
+}
 
 // 「答えに詰まっている（=補足が必要）」を表す語。
 // ※「特になし／なし／未定」などの“意図的に無い”は有効な回答として扱うため含めない。
@@ -105,7 +125,9 @@ const UNSURE_HINTS = [
 export function looksLikeQuestion(text: string): boolean {
   const t = String(text ?? "").trim();
   if (!t) return false;
-  return QUESTION_HINTS.some((w) => t.includes(w));
+  if (hasStrongQuestion(t)) return true;
+  // 弱シグナルは短文のときのみ採用（長い平叙文の埋め込み節を誤検出しない）
+  return t.length <= WEAK_QUESTION_MAXLEN && hasWeakQuestion(t);
 }
 
 function looksUnsure(text: string): boolean {
@@ -126,6 +148,59 @@ function parseLabel(raw: string): TurnVector | null {
 }
 
 /**
+ * 分類モード:
+ *  - "ai"     : 毎ターン必ずAIで分類（精度優先）。AI不可/失敗時はヒューリスティックへ。
+ *  - "hybrid" : 明確な入力はヒューリスティックで即確定し、曖昧なときだけAI（速度優先）。
+ */
+const CLASSIFY_MODE = (process.env.CLASSIFY_MODE ?? "ai").toLowerCase() as
+  | "ai"
+  | "hybrid";
+
+/** ヒューリスティックのみで方向を確定する（AI不可時の土台・hybridの即決にも使う）。 */
+function heuristicDecide(t: string): Classification {
+  if (looksUnsure(t)) return decide("unsure", 0.8, "heuristic");
+  const strong = hasStrongQuestion(t);
+  const weak = !strong && t.length <= WEAK_QUESTION_MAXLEN && hasWeakQuestion(t);
+  if (strong) return decide("question", 0.6, "heuristic");
+  if (weak) return decide("question", 0.55, "heuristic");
+  // 質問っぽさが無ければ回答（IBM: current node priority）
+  return decide("answer", 0.8, "heuristic");
+}
+
+/** 軽量AIで answer/question/unsure/offtopic を判定。失敗時は fallback を返す。 */
+async function aiClassify(
+  currentQuestion: string,
+  t: string,
+  fallback: Classification
+): Promise<Classification> {
+  if (!aiReady("classify")) return fallback;
+
+  const prompt =
+    "あなたはキャリア相談ヒアリングの分類器です。いま尋ねている問いに対するユーザーの入力を、" +
+    "次の4種類のいずれかに分類してください。\n" +
+    "- ANSWER: 問いへの回答（自分の考え・経験・気持ち・状況を述べている。断定や箇条書き、" +
+    "「〜したい」「〜を重視」「〜かどうか…」のような平叙文を含む）\n" +
+    "- QUESTION: 相談者からの質問・相談（こちらに情報や判断を求めている）\n" +
+    "- UNSURE: 答えに詰まっている・わからない・迷っていて回答になっていない\n" +
+    "- OFFTOPIC: ヒアリングと無関係な雑談\n" +
+    "迷ったら ANSWER を優先（平叙文は基本 ANSWER）。出力は1語のみ（説明禁止）。\n\n" +
+    `現在の問い: ${currentQuestion}\n` +
+    `入力: ${t}\n` +
+    "分類:";
+
+  const r = await runText("classify", "classify", prompt, {
+    maxOutputTokens: 6,
+    temperature: 0,
+    thinkingBudget: 0, // 思考オフ＝最速（分類は単純タスク）
+    timeoutMs: Number(process.env.AI_TIMEOUT_CLASSIFY_MS ?? "5000"),
+  });
+  if (!r.ok) return fallback;
+  const label = parseLabel(r.value);
+  if (!label) return fallback;
+  return decide(label, 0.85, "ai");
+}
+
+/**
  * 1ターンを分類して方向を決める。
  * @param currentQuestion いま尋ねている質問文
  * @param text ユーザー入力
@@ -135,38 +210,17 @@ export async function classifyTurn(
   text: string
 ): Promise<Classification> {
   const t = String(text ?? "").trim();
-
-  // 1) 即時ヒューリスティック
   if (!t) return decide("empty", 1, "heuristic");
-  if (looksUnsure(t)) return decide("unsure", 0.8, "heuristic");
-  // 質問っぽさが無ければ、ほぼ回答（IBM: current node priority）
-  if (!looksLikeQuestion(t)) return decide("answer", 0.75, "heuristic");
 
-  // 2) 曖昧（質問っぽい）→ 軽量AIで answer/question/offtopic を判定
-  if (!aiReady("classify")) {
-    // AI不可：質問っぽいので質問として扱う（取りこぼし防止）
-    return decide("question", 0.5, "fallback");
+  // ヒューリスティック結果は、AI不可/失敗時のフォールバック土台として常に用意する。
+  const heur = heuristicDecide(t);
+
+  if (CLASSIFY_MODE === "ai") {
+    // 毎ターン必ずAIで分類（精度優先）。AIが使えない/失敗したらヒューリスティックへ。
+    return aiClassify(currentQuestion, t, heur);
   }
 
-      const prompt =
-        "あなたはキャリア相談ヒアリングの分類器です。次の入力が、現在の問いへの『回答』か、" +
-        "相談者からの『質問・相談』か、ヒアリングと無関係な『雑談』かを分類してください。\n" +
-        "出力は次のいずれか1語のみ（説明禁止）: ANSWER / QUESTION / OFFTOPIC\n\n" +
-        `現在の問い: ${currentQuestion}\n` +
-        `入力: ${t}`;
-
-  const r = await runText("classify", "classify", prompt, {
-    maxOutputTokens: 4,
-    temperature: 0,
-    thinkingBudget: 0, // 思考オフ＝最速（分類は単純タスク）
-    timeoutMs: Number(process.env.AI_TIMEOUT_CLASSIFY_MS ?? "5000"),
-  });
-
-  if (!r.ok) {
-    // AI失敗/遮断：質問として扱う（フォールバック）
-    return decide("question", 0.5, "fallback");
-  }
-  const label = parseLabel(r.value);
-  if (!label) return decide("question", 0.5, "fallback");
-  return decide(label, 0.85, "ai");
+  // hybrid: 明確なものは即確定、曖昧（質問っぽい）ときだけAIに最終判定を委ねる。
+  if (heur.vector === "unsure" || heur.vector === "answer") return heur;
+  return aiClassify(currentQuestion, t, heur);
 }
