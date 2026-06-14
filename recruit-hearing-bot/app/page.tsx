@@ -10,11 +10,11 @@ export default function Home() {
       }}
     >
       <h1 style={{ fontSize: 28, fontWeight: 800, marginBottom: 12 }}>
-        IBMで働くこと、一緒に考えてみませんか
+        IBMを知りながら、就活の軸を見つける対話
       </h1>
       <p style={{ lineHeight: 1.7, color: "#374151", marginBottom: 24 }}>
-        「IBMに入りたいか」「自分に合っていそうか」を迷っている方のためのヒアリングです。
-        合否を決めるものではありません。対話しながら、あなたの気持ちを一緒に整理していきましょう。
+        IBMについて理解を深めながら、あなたの「就活の軸」を一緒に言葉にしていく対話の場です。
+        合否を決めるものではありません。気になることはいつでも質問でき、雑談するくらいの気持ちで進められます。
       </p>
       <Link
         href="/hearing"
@@ -28,7 +28,7 @@ export default function Home() {
           textDecoration: "none",
         }}
       >
-        ヒアリングを始める →
+        対話を始める →
       </Link>
     </main>
   );

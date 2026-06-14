@@ -6,7 +6,12 @@
 //   - 低速・失敗の構造化ログ（テレメトリ）
 //   - 成功/失敗の記録（回路へフィードバック）
 // を一元化する。テキスト生成（runText）とストリーム生成（runStream）に対応。
-import { generateText, generateTextStream, hasGemini } from "../gemini";
+import {
+  generateText,
+  generateTextStream,
+  hasGemini,
+  DEFAULT_MODEL,
+} from "../gemini";
 import {
   circuits,
   networkGuard,
@@ -26,6 +31,39 @@ function phaseModel(circuit: CircuitName): string | undefined {
   if (circuit === "gapfill") return process.env.AI_GAPFILL_MODEL || undefined;
   return undefined;
 }
+// --- モデル・フォールバック（429が出たモデルは一時的に避け、次モデルへ切替） ---
+
+/** レート制限を受けたモデルを一時的に避ける最小バックオフ（churn防止） */
+const RATE_MIN_BACKOFF_MS = Number(process.env.AI_RATE_MIN_BACKOFF_MS ?? "60000");
+
+/** モデル名 → このms時刻まではレート制限中（使わない） */
+const modelRateUntil = new Map<string, number>();
+
+function isModelRateLimited(model: string): boolean {
+  return (modelRateUntil.get(model) ?? 0) > Date.now();
+}
+function markModelRateLimited(model: string, retryAfterMs?: number): void {
+  const wait = Math.max(RATE_MIN_BACKOFF_MS, retryAfterMs ?? 0);
+  modelRateUntil.set(model, Math.max(modelRateUntil.get(model) ?? 0, Date.now() + wait));
+}
+function clearModelRateLimit(model: string): void {
+  modelRateUntil.delete(model);
+}
+
+/**
+ * このフェーズで試すモデルの優先順リスト。
+ *   primary（opts.model → AI_*_MODEL → GEMINI_MODEL）→ GEMINI_FALLBACK_MODELS の順。
+ * 429が出たモデルは呼び出し側でスキップする。
+ */
+function candidateModels(primary: string): string[] {
+  const raw =
+    process.env.GEMINI_FALLBACK_MODELS ??
+    process.env.GEMINI_FALLBACK_MODEL ??
+    "gemini-2.5-flash";
+  const fallbacks = raw.split(",").map((s) => s.trim()).filter(Boolean);
+  return [...new Set([primary, ...fallbacks])];
+}
+
 const LOG_LEVEL = (process.env.AI_LOG_LEVEL ?? "warn") as
   | "off"
   | "error"
@@ -196,35 +234,64 @@ export async function runText(
     return { ok: false, reason: "bypassed", elapsedMs: 0 };
   }
 
-  const ac = new AbortController();
   const timeoutMs = opts?.timeoutMs ?? TIMEOUT_MS;
-  try {
-    const value = await withTimeout(
-      generateText(prompt, {
-        signal: ac.signal,
-        maxOutputTokens: opts?.maxOutputTokens,
-        temperature: opts?.temperature,
-        thinkingBudget: opts?.thinkingBudget,
-        model: opts?.model ?? phaseModel(circuit),
-      }),
-      timeoutMs,
-      ac.signal
-    );
-    circuits[circuit].recordSuccess();
-    const elapsedMs = Date.now() - t0;
-    if (elapsedMs >= SLOW_MS) {
-      logJson("info", { event: "ai_slow", phase, circuit, elapsedMs });
+  const primary = opts?.model ?? phaseModel(circuit) ?? DEFAULT_MODEL;
+  const models = candidateModels(primary);
+
+  // 429のモデルは避けつつ順に試す。全モデル429のときだけグローバルバックオフへ倒す。
+  let lastRate: { message: string; retryAfterMs?: number } | null = null;
+  for (const model of models) {
+    if (isModelRateLimited(model)) continue;
+    const ac = new AbortController();
+    try {
+      const value = await withTimeout(
+        generateText(prompt, {
+          signal: ac.signal,
+          maxOutputTokens: opts?.maxOutputTokens,
+          temperature: opts?.temperature,
+          thinkingBudget: opts?.thinkingBudget,
+          model,
+        }),
+        timeoutMs,
+        ac.signal
+      );
+      circuits[circuit].recordSuccess();
+      clearModelRateLimit(model);
+      const elapsedMs = Date.now() - t0;
+      if (elapsedMs >= SLOW_MS) {
+        logJson("info", { event: "ai_slow", phase, circuit, model, elapsedMs });
+      }
+      return { ok: true, value, elapsedMs };
+    } catch (e) {
+      ac.abort();
+      const { type, message } = classifyAiError(e);
+      if (type === "rate") {
+        const retryAfterMs = parseRetryAfterMs(message);
+        markModelRateLimited(model, retryAfterMs);
+        lastRate = { message, retryAfterMs };
+        logJson("info", { event: "ai_model_fallback", phase, circuit, model, retryAfterMs });
+        continue; // 次のモデルへ切替
+      }
+      // 非rateエラーは従来どおり（モデル切替せず失敗）
+      circuits[circuit].recordFailure(type, message);
+      const elapsedMs = Date.now() - t0;
+      logJson("warn", { event: "ai_error", phase, circuit, model, type, elapsedMs, message });
+      return { ok: false, reason: type, elapsedMs };
     }
-    return { ok: true, value, elapsedMs };
-  } catch (e) {
-    ac.abort();
-    const { type, message } = classifyAiError(e);
-    const retryAfterMs = type === "rate" ? parseRetryAfterMs(message) : undefined;
-    circuits[circuit].recordFailure(type, message, retryAfterMs);
-    const elapsedMs = Date.now() - t0;
-    logJson("warn", { event: "ai_error", phase, circuit, type, elapsedMs, retryAfterMs, message });
-    return { ok: false, reason: type, elapsedMs };
   }
+
+  // 全モデルがレート制限 → グローバルバックオフ（固定フローへ）
+  circuits[circuit].recordFailure("rate", lastRate?.message, lastRate?.retryAfterMs);
+  const elapsedMs = Date.now() - t0;
+  logJson("warn", {
+    event: "ai_error",
+    phase,
+    circuit,
+    type: "rate",
+    elapsedMs,
+    message: lastRate?.message ?? "all models rate-limited",
+  });
+  return { ok: false, reason: "rate", elapsedMs };
 }
 
 /**
@@ -256,40 +323,72 @@ export async function runStream(
     return { ok: false, reason: "bypassed", elapsedMs: 0 };
   }
 
-  const ac = new AbortController();
   const timeoutMs = opts?.timeoutMs ?? TIMEOUT_MS;
-  // 全体タイムアウト（最初のトークンまでではなく全体）。詰まり対策。
-  const timer = setTimeout(() => ac.abort(), timeoutMs);
-  let acc = "";
-  try {
-    for await (const delta of generateTextStream(prompt, {
-      signal: ac.signal,
-      maxOutputTokens: opts?.maxOutputTokens,
-      temperature: opts?.temperature,
-      thinkingBudget: opts?.thinkingBudget,
-      model: opts?.model ?? phaseModel(circuit),
-    })) {
-      if (ac.signal.aborted) break;
-      acc += delta;
-      onDelta(delta);
+  const primary = opts?.model ?? phaseModel(circuit) ?? DEFAULT_MODEL;
+  const models = candidateModels(primary);
+
+  let lastRate: { message: string; retryAfterMs?: number } | null = null;
+  for (const model of models) {
+    if (isModelRateLimited(model)) continue;
+    const ac = new AbortController();
+    // 全体タイムアウト（最初のトークンまでではなく全体）。詰まり対策。
+    const timer = setTimeout(() => ac.abort(), timeoutMs);
+    let acc = "";
+    try {
+      for await (const delta of generateTextStream(prompt, {
+        signal: ac.signal,
+        maxOutputTokens: opts?.maxOutputTokens,
+        temperature: opts?.temperature,
+        thinkingBudget: opts?.thinkingBudget,
+        model,
+      })) {
+        if (ac.signal.aborted) break;
+        acc += delta;
+        onDelta(delta);
+      }
+      clearTimeout(timer);
+      circuits[circuit].recordSuccess();
+      clearModelRateLimit(model);
+      const elapsedMs = Date.now() - t0;
+      if (elapsedMs >= SLOW_MS) {
+        logJson("info", { event: "ai_slow", phase, circuit, model, elapsedMs });
+      }
+      return { ok: true, value: acc, elapsedMs };
+    } catch (e) {
+      clearTimeout(timer);
+      ac.abort();
+      const { type, message } = classifyAiError(e);
+      // 既に一部出力していれば、それを部分成功として返す（モデル切替はしない）。
+      if (acc) {
+        circuits[circuit].recordFailure(type, message, parseRetryAfterMs(message));
+        const elapsedMs = Date.now() - t0;
+        logJson("warn", { event: "ai_error", phase, circuit, model, type, elapsedMs, message });
+        return { ok: true, value: acc, elapsedMs };
+      }
+      if (type === "rate") {
+        const retryAfterMs = parseRetryAfterMs(message);
+        markModelRateLimited(model, retryAfterMs);
+        lastRate = { message, retryAfterMs };
+        logJson("info", { event: "ai_model_fallback", phase, circuit, model, retryAfterMs });
+        continue; // 次のモデルへ切替
+      }
+      circuits[circuit].recordFailure(type, message);
+      const elapsedMs = Date.now() - t0;
+      logJson("warn", { event: "ai_error", phase, circuit, model, type, elapsedMs, message });
+      return { ok: false, reason: type, elapsedMs };
     }
-    clearTimeout(timer);
-    circuits[circuit].recordSuccess();
-    const elapsedMs = Date.now() - t0;
-    if (elapsedMs >= SLOW_MS) {
-      logJson("info", { event: "ai_slow", phase, circuit, elapsedMs });
-    }
-    return { ok: true, value: acc, elapsedMs };
-  } catch (e) {
-    clearTimeout(timer);
-    ac.abort();
-    const { type, message } = classifyAiError(e);
-    const retryAfterMs = type === "rate" ? parseRetryAfterMs(message) : undefined;
-    circuits[circuit].recordFailure(type, message, retryAfterMs);
-    const elapsedMs = Date.now() - t0;
-    logJson("warn", { event: "ai_error", phase, circuit, type, elapsedMs, retryAfterMs, message });
-    // 途中まで出ていれば、それを value として返す（部分成功）
-    if (acc) return { ok: true, value: acc, elapsedMs };
-    return { ok: false, reason: type, elapsedMs };
   }
+
+  // 全モデルがレート制限 → グローバルバックオフ（固定フローへ）
+  circuits[circuit].recordFailure("rate", lastRate?.message, lastRate?.retryAfterMs);
+  const elapsedMs = Date.now() - t0;
+  logJson("warn", {
+    event: "ai_error",
+    phase,
+    circuit,
+    type: "rate",
+    elapsedMs,
+    message: lastRate?.message ?? "all models rate-limited",
+  });
+  return { ok: false, reason: "rate", elapsedMs };
 }

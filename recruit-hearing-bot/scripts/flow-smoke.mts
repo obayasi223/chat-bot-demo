@@ -27,16 +27,15 @@ assert(intro.includes("IBM"), "introにあいさつが含まれる");
 assert(state.mode === "collecting", "開始後 mode=collecting");
 assert(state.currentIndex === 0, "開始後 index=0");
 
-// 8問に順番に回答
+// 7問に順番に回答（個人情報は扱わない対話型フロー）
 const answers = [
-  "山田太郎",
-  "社会人で転職を検討中です",
   "知人がIBMで働いていて、規模の大きな仕事に惹かれました",
+  "先進的で堅実なイメージです。実際の働き方はあまり知りません",
   "社会に影響のある仕事に、長く腰を据えて取り組みたいです",
   "受託開発で5年、ReactとTypeScriptでSPAを設計・実装してきました",
   "大企業で自分の裁量が限られないか、少し不安に感じています",
-  "リモート可・東京近郊、チームで協力しながら進めたいです",
-  "特になし",
+  "リモート可で、チームで協力しながら進められると力を発揮できます",
+  "社会に貢献しながら自分も成長し続けられること、が今の軸です",
 ];
 
 let last = "";
@@ -46,8 +45,8 @@ for (let i = 0; i < answers.length; i++) {
 
 assert(state.mode === "done", "全問回答で mode=done");
 assert(last.includes("【ご回答内容】"), "最後にサマリが出る");
-assert(last.includes("山田太郎"), "サマリに氏名が含まれる");
-assert(Object.keys(state.answers).length === 8, "回答が8件保存される");
+assert(last.includes("今の軸です"), "サマリに最後の回答が含まれる");
+assert(Object.keys(state.answers).length === 7, "回答が7件保存される");
 
 // 完了後にもう一度送ると完了案内
 const afterDone = await turn(state, "こんにちは");

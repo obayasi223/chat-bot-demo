@@ -1,96 +1,107 @@
-# IBMフィット ヒアリングボット（recruit-hearing-bot）
+# IBM理解＆就活の軸 対話ボット（recruit-hearing-bot）
 
-「IBMに入りたいか・自分に合っていそうか」を迷っている方の気持ちを、チャット形式の対話で一緒に整理する AI ボットです。合否を判定するものではありません。
+## 作成物の説明（何を作ったのか / 目的・背景）
 
-> **このリポジトリについて**
-> 就職活動用のポートフォリオとして作成したものです。
-> 実務で開発した Web制作ヒアリングボット（`web_hearing`）の構成を参考に、
-> **コア機能だけを抜き出して再実装したデモ版**です。本番の全機能は含みません（[省略した機能](#デモ版で省略した機能)を参照）。
+IBM について理解を深めながら、相談者自身の「就活の軸」をチャット形式の対話で一緒に言葉にしていく AI 対話ボットです。氏名などの個人情報は扱わず、固定の質問を順に埋めさせる“フォーム”ではなく、開かれた問いと AI による深掘りで**対話性**を重視しています。合否を判定するものではありません。
 
-## デモ
-
-相談者がチャットに沿って答えていくと、AI が回答の具体性を判定し、必要なら自動で深掘り質問を返します。
-答えに詰まったときは、これまでのお話をふまえて考えるヒントを一緒に挙げます。最後に内容のサマリを提示して完了します。
+- **何を作ったか**: きっかけ → IBM のイメージ → 大切にしたいこと → 強み → 不安 → 働き方 → 就活の軸、という流れを対話で進め、回答の十分性を AI が判断して必要なときだけ自然に掘り下げる Web チャットアプリ。回答に詰まればヒントを提示し、観点の偏りを見ながら手薄な部分を補い、十分に話せたと判断したら自動で締めてサマリを提示します。
+- **目的・背景**: 「ルールベースの固定フローでは拾いきれない、利用者ごとに異なる文脈や迷い」を AI で補完することを狙いとしています。実務で開発した Web 制作ヒアリングボット（`web_hearing`）の構成を参考に、**コア機能だけを抜き出して再実装したポートフォリオ用デモ**です（本番の全機能は含みません）。
+- **設計上のこだわり**: API キーや DB が未設定でも必ず起動・動作するよう、機能を段階的に縮退させるフォールバックを全体に組み込んでいます。
 
 ```bash
 npm install
-npm run dev   # http://localhost:3000
+npm run dev   # http://localhost:3000 →  /hearing
 ```
 
-APIキー・DB が未設定でも起動し、「チャットUI・フロー進行・ストリーミング・リロード復帰」は動作します（下記フォールバック参照）。
+## 自身が担当した役割（実装箇所・担当工程）
 
-## 主な機能
+企画・設計・実装・検証まで一人で担当（フルスタック）。主な担当箇所は以下のとおりです。
 
-- **対話型ヒアリングフロー** — 質問を1問ずつ提示し、回答をスロットに収集。進捗バーとサマリ表示つき（`lib/flows.ts` / `lib/handleText.ts`）
-- **AIによる自動深掘り** — 経験・スキル・志望動機など特定項目で、回答が薄ければ AI が追加質問を1回だけ自動生成（`lib/aiDeepen.ts`）
-- **脱線への対応** — ヒアリング中の質問・相談・「わからない」を分類し、FAQで答えてから元の質問へ戻す（IBM watsonx Assistant の return-to-flow を参考。`lib/harness/classify.ts` / `lib/intent.ts` / `lib/knowledge.ts`）
-- **トークン単位のストリーミング表示** — AIの出力を SSE で逐次描画（`app/api/hearing/route.ts`）
-- **会話の永続化と再開** — 状態とチャットログを保存し、リロードしても続きから再開（Cookieセッション）
-- **AIハーネス** — 全AI呼び出しをラップし、タイムアウト・サーキットブレーカ・エラー分類・構造化ログを一元化。AIが詰まっても会話は止めず固定フローへ倒す（`lib/harness/`）
-- **段階的フォールバック** — 環境変数の有無で挙動が縮退し、未設定でも必ず動く
+- **会話エンジン**: 1ターンの処理フロー（分類 → 分岐 → 深掘り / 補完 / ラップアップ）を実装（`lib/handleText.ts`、`lib/flows.ts`）。
+- **AI ハーネス**: 全 AI 呼び出しを包む共通基盤を設計。タイムアウト・サーキットブレーカ・エラー分類・モデルフォールバック・グローバルバックオフを一元化（`lib/harness/aiRuntime.ts`、`circuit.ts`、`classify.ts`）。
+- **対話の知能化**: 回答の十分性判定・自然な相づち・多段深掘り・早期ラップアップ判定（`lib/aiDeepen.ts`）、観点バランスの数式算出（`lib/coverage.ts`）、終盤の観点ギャップ補完（`lib/gapfill.ts`）、「わからない」時のヒント生成（`lib/assist.ts`）。
+- **API / ストリーミング**: SSE で逐次描画する API ルート（`app/api/hearing/route.ts`）。
+- **フロントエンド**: フルスクリーン2ペイン構成のチャット UI（進捗リング・観点バランス・AI 利用不可の案内バナー）（`app/hearing/ChatClient.tsx`）。
+- **永続化**: Supabase ⇄ インメモリを切り替える状態・メッセージ保存（`lib/store.ts`、`dbState.ts`、`dbMessages.ts`、`session.ts`）。
+- **検証・ドキュメント**: オフラインのスモークテストと HTTP E2E（`scripts/flow-smoke.mts`、`scripts/http-e2e.mjs`）、会話設計ナレッジの整備（`docs/conversation-knowledge.md`）。
 
-| 機能 | 設定あり | 設定なし時の挙動 |
-|---|---|---|
-| AI深掘り・質問応答（`GEMINI_API_KEY`） | Gemini で生成 | スキップ／FAQ即時マッチのみ |
-| 永続化（Supabase 2変数） | PostgreSQL に保存 | インメモリ（再起動で消える） |
+## 直面した課題と解決方法
 
-## 技術スタック
+- **入力分類の精度（平叙文を質問と誤判定）**
+  「成長できるか重視しています」のような長い平叙文が“質問”と誤判定され、対話が脱線していました。質問サインを強／弱シグナルに分け、弱シグナルは短文のみ有効にする長さガード（`CLASSIFY_WEAK_MAXLEN`）を導入。さらに分類自体を AI 主導（`CLASSIFY_MODE=ai`）にし、ヒューリスティックは AI 不可時のフォールバックへ降格しました。
 
+- **「わからない／特になし」のループ**
+  ボットの提案を「特になし」と返すと再び“わからない”と判定され堂々巡りに。`UNSURE` 判定の語彙を見直し、UI に「答えにくい・特になし」スキップボタンを追加して確実に次へ進めるようにしました。
+
+- **API のレート制限（429）で AI が止まる**
+  ライブ検証中に日次クォータへ到達し AI 機能が全滅。エラーコードで即判断し、**429 を受けたら別モデルへ自動フォールバック**（`GEMINI_FALLBACK_MODELS`）、枯渇したモデルは一時的に回避する仕組みにしました。全モデル枯渇時のみ `retryDelay` を尊重したグローバルバックオフへ倒し、固定フローで会話を継続します。
+
+- **ネットワーク／認証エラー時の連続失敗**
+  失敗のたびに毎回 AI を叩いて遅延が積み上がる問題に対し、ネットワーク（`ENOTFOUND` 等）・401/403 を専用に検知。全フェーズを一括停止するグローバルガードで即バックオフし、復旧後に自動再開します。
+
+- **「システムによる過剰な制御」感**
+  数値しきい値で機械的に質問を打ち切ると不自然だったため、終了判断を AI 主導（`assessOverall`）へ寄せ、数値は“どの観点を優先するか”のヒントへ降格。深掘り・ギャップ補完の回数は暴走防止の安全上限としてのみ残しました。
+
+- **AI 不調がユーザーに伝わらない**
+  キー未設定や障害時に黙って固定フローへ落ちると不信感につながるため、`meta.aiAvailable` を UI に反映し「定型のご質問でお伺いします（回答は記録されます）」と明示する案内バナーを追加しました。
+
+- **デモ環境でも必ず動くこと**
+  審査・デモでキーや DB が無い前提を考慮し、環境変数の有無と AI の状態に応じて挙動が段階的に縮退する設計に統一（永続化は未設定ならインメモリ、AI 不可なら固定フロー＋FAQ 即時マッチ）。
+
+## 技術情報（使用モデル、API、アーキテクチャ、実装方法）
+
+### 使用モデル・API
+- **生成 AI**: Google Gemini（`@google/genai`）。既定モデルは `gemini-2.5-flash`（`GEMINI_MODEL` で変更可）。429 時は `GEMINI_FALLBACK_MODELS` の別モデルへ自動切替。
+  - 分類・短文生成など単純タスクは `thinkingBudget: 0`（思考オフ）でレイテンシを最小化。
+  - 出力はストリーミング（`generateContentStream`）で取得し、トークン単位で UI へ反映。
+- **永続化 API**: Supabase（PostgreSQL）。`NEXT_PUBLIC_SUPABASE_URL` と `SUPABASE_SERVICE_ROLE_KEY` の両方が設定されたときのみ有効。未設定ならインメモリ。
+- **配信 / 通信**: Server-Sent Events（SSE）による逐次配信。Cookie セッションで会話を永続化・再開。
+
+### 技術スタック
 - **フレームワーク**: Next.js 16（App Router）+ React 19 + TypeScript
-- **AI**: Google Gemini 2.5 Flash（`@google/genai`）
-- **DB**: Supabase / PostgreSQL（任意。未設定ならインメモリ）
-- **スタイル**: Tailwind CSS
+- **スタイル**: Tailwind CSS + インラインスタイル（フルスクリーン2ペイン UI）
+- **ランタイム / 検証**: Node.js、`tsx` による型チェック・スモークテスト
 
-## セットアップ
-
-```bash
-npm install
-cp .env.example .env.local   # 任意。何も埋めなくても起動する
-npm run dev
-```
-
-環境変数（すべて任意）:
-
-- `GEMINI_API_KEY` … AI深掘り・質問応答を有効化（未設定なら固定フローのみ）
-- `NEXT_PUBLIC_SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` … 永続化（両方設定で有効。テーブルは `supabase.sql` を実行）
-
-## デプロイ（Vercel）
-
-このアプリはリポジトリ直下ではなく **`recruit-hearing-bot/` サブディレクトリ**にあります。
-Vercel にデプロイする際は **Root Directory を `recruit-hearing-bot` に設定**してください
-（未設定だとリポジトリ直下に Next.js アプリが見つからず、全ページが 404 NOT_FOUND になります）。
-
-- Vercel: Project → Settings → Build and Deployment → **Root Directory** = `recruit-hearing-bot`
-- CLI: `vercel --cwd recruit-hearing-bot`
-
-環境変数（`GEMINI_API_KEY` など）は未設定でも動作します（前述のフォールバック）。
-
-## ディレクトリ構成
-
+### アーキテクチャ
 ```
 app/
   page.tsx                 # ランディング
-  hearing/                 # ヒアリング画面（ChatClient = チャットUI）
-  api/hearing/route.ts     # GET=状態/開始, POST=1ターン処理（SSE）
+  hearing/ChatClient.tsx   # チャットUI（進捗リング・観点バランス・AI状態バナー）
+  api/hearing/route.ts     # GET=状態/開始, POST=1ターン処理（SSEストリーミング）
 lib/
-  flows.ts                 # 質問フロー定義（スロット）
-  handleText.ts            # 会話の中核ロジック
-  aiDeepen.ts / intent.ts  # AI深掘り / ナレッジ応答
-  knowledge.ts             # FAQ・回答ポリシー
-  harness/                 # AIハーネス（classify / circuit / aiRuntime）
-  store.ts / dbState.ts / dbMessages.ts  # 永続化（Supabase ⇄ インメモリ）
-  gemini.ts / session.ts / state.ts
+  flows.ts                 # 質問フロー定義（スロット。deepen:true が深掘り対象）
+  handleText.ts            # 会話の中核（分類→分岐→深掘り/補完/ラップアップ）
+  aiDeepen.ts              # 十分性判定・相づち・多段深掘り・早期ラップアップ判定
+  coverage.ts              # 観点バランスの算出（AI不使用の純粋関数）
+  gapfill.ts               # 終盤の観点ギャップ補完（開かれた質問の生成）
+  assist.ts                # 「わからない」時のヒント生成
+  intent.ts / knowledge.ts # 脱線対応（FAQ応答→元の質問へ戻す）/ 回答ポリシー
+  harness/                 # AIハーネス: aiRuntime / circuit / classify
+  store.ts / dbState.ts / dbMessages.ts / session.ts  # 永続化（Supabase⇄インメモリ）
+  gemini.ts / state.ts
+docs/conversation-knowledge.md  # 会話設計ナレッジ・環境変数一覧
 supabase.sql               # テーブル定義
 ```
 
-## カスタマイズ
+リクエストは `route.ts`（POST）が受け、`handleText.ts` が「入力分類 → 回答/質問/わからない/雑談で分岐 → 必要なら深掘り・ギャップ補完・ラップアップ」を実行。すべての AI 呼び出しは **AI ハーネス**（`lib/harness/`）を経由し、フェーズごとに独立したサーキットブレーカと、ネットワーク／レート／認証障害を横断的に止めるグローバルガードで保護しています。
 
-- **質問を変える**: `lib/flows.ts` の `RECRUIT_FLOW.slots` を編集。`deepen: true` の項目だけ AI 深掘りの対象になります。
-- **別ドメインに転用**: 新しい `Flow` を定義して `FLOWS` に登録し、`DEFAULT_FLOW_ID` を差し替えます。
+### 実装方法のポイント
+- **AI ハーネス（堅牢な呼び出し基盤）**: フェーズ別のサーキットブレーカ＋エラー分類（`network` / `rate` / `auth` / その他）。429 はモデルフォールバック、致命的障害は即バックオフし固定フローへ。
+- **十分性判定 + 多段深掘り**: 回答が本人理解に十分かを構造化 JSON（`enough` / `reflect` / `ask`）で判定し、相手の言葉に触れた相づちを添えて自然に深掘り。続行は AI 主導、回数は安全上限のみ（`AI_DEEPEN_MAX_ROUNDS`）。
+- **観点バランス（coverage）**: 動機・IBM 理解・価値観・強み・不安・働き方の取れ具合を AI 不使用の純粋関数で数値化し、手薄な観点を `gapfill` の対象に。
+- **早期ラップアップ**: 全体が十分と AI が判断したら残りの予定質問を省いて自然に締める（`AI_WRAPUP_*` / `assessOverall`）。
+- **段階的フォールバック**: 下表のとおり、未設定・障害時でも必ず動作。
 
-## デモ版で省略した機能
+| 機能 | 設定あり／正常時 | 設定なし・障害時の挙動 |
+|---|---|---|
+| AI 深掘り・質問応答・分類（`GEMINI_API_KEY`） | Gemini で生成・判定 | 固定質問フローで進行（分類はヒューリスティック、深掘り/補完はスキップ、質問は FAQ 即時マッチ）＋ UI に案内表示 |
+| レート制限（429） | — | 別モデルへ自動フォールバック（`GEMINI_FALLBACK_MODELS`）。全モデル枯渇時のみ固定フローへ。復旧で自動復帰 |
+| ネットワーク／認証障害 | — | エラーコードで即バックオフし固定フローへ。復旧で自動再開 |
+| 永続化（Supabase 2 変数） | PostgreSQL に保存 | インメモリ（再起動で消える） |
 
-本番（`web_hearing`）にはあるが、本デモでは省略している主な機能:
+主な環境変数（すべて任意。未設定でもコード側の既定値で動作）:
 
-招待リンク / 再開コード、ファイル・画像添付、音声入力、管理画面、
-Google Sheets への自動エクスポート（Cron）、OpenAI フォールバック、複数回の深掘りなど。
+- `GEMINI_API_KEY` … AI 深掘り・質問応答・分類を有効化
+- `GEMINI_MODEL` / `GEMINI_FALLBACK_MODELS` … 既定モデルと 429 時のフォールバック先
+- `NEXT_PUBLIC_SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` … 永続化（テーブルは `supabase.sql`）
+- `CLASSIFY_MODE` / `AI_DEEPEN_MAX_ROUNDS` / `AI_WRAPUP_*` / 各種タイムアウト・バックオフ … 動作チューニング（詳細は `.env.example` と `docs/conversation-knowledge.md`）

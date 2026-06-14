@@ -4,6 +4,9 @@ import { GoogleGenAI } from "@google/genai";
 
 const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 
+/** 既定モデル名（ハーネスのフォールバック解決で使用） */
+export const DEFAULT_MODEL = MODEL;
+
 let client: GoogleGenAI | null = null;
 
 export function hasGemini(): boolean {

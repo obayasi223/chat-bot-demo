@@ -45,6 +45,7 @@ type Progress = {
   total: number;
   inFollowup: boolean;
   mode: Meta["mode"];
+  currentKey: string | null;
   coverage: Coverage | null;
   aiAvailable: boolean;
   aiReason: "ok" | "no_key" | "backoff";
@@ -92,14 +93,66 @@ async function readErrorResponse(res: Response): Promise<string> {
   );
 }
 
-// スコア(0..1)に応じた色（緑=十分 / 橙=手薄 / 灰=未取得）
+// 各スロットを会話の「フェーズ名」として見せる
+const STEP_LABEL: Record<string, string> = {
+  trigger: "きっかけ",
+  image: "IBMのイメージ",
+  values: "大切にしたいこと",
+  strengths: "強み・経験",
+  concerns: "不安・迷い",
+  work_style: "働き方",
+  axis: "就活の軸",
+};
+
+// スコア(0..1)に応じた色（緑=十分 / 橙=手薄 / 暗=未取得）。ダーク背景向け。
 function scoreColor(score: number, answered: boolean): string {
-  if (!answered || score <= 0) return "#e5e7eb";
-  if (score >= 0.5) return "#16a34a";
-  return "#f59e0b";
+  if (!answered || score <= 0) return "rgba(255,255,255,0.16)";
+  if (score >= 0.5) return "#34d399";
+  return "#fbbf24";
 }
 
-// 観点ごとの取れ具合と全体の均等度を表示する小さなパネル
+// サイドバー用の円形プログレス（conic-gradient）
+function ProgressRing({ pct, isDone }: { pct: number; isDone: boolean }) {
+  const ring = isDone ? "#34d399" : "#4589ff";
+  return (
+    <div
+      style={{
+        position: "relative",
+        width: 108,
+        height: 108,
+        borderRadius: "50%",
+        background: `conic-gradient(${ring} ${pct * 3.6}deg, rgba(255,255,255,0.10) 0deg)`,
+        display: "grid",
+        placeItems: "center",
+        flexShrink: 0,
+        boxShadow: `0 0 0 1px rgba(255,255,255,0.06), 0 8px 24px rgba(69,137,255,0.18)`,
+      }}
+    >
+      <div
+        style={{
+          width: 82,
+          height: 82,
+          borderRadius: "50%",
+          background: "#0c1526",
+          display: "grid",
+          placeItems: "center",
+        }}
+      >
+        <div style={{ textAlign: "center", lineHeight: 1 }}>
+          <div style={{ fontSize: 24, fontWeight: 800, color: "#fff" }}>
+            {pct}
+            <span style={{ fontSize: 12, marginLeft: 1 }}>%</span>
+          </div>
+          <div style={{ fontSize: 10, color: "#8aa0c4", marginTop: 4 }}>
+            {isDone ? "完了" : "進行中"}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// 観点ごとの取れ具合と全体の均等度を表示するパネル（ダークサイドバー向け）
 function CoveragePanel({ coverage }: { coverage: Coverage | null }) {
   if (!coverage || coverage.axes.length === 0) return null;
   const anyAnswered = coverage.axes.some((a) => a.answered);
@@ -112,10 +165,10 @@ function CoveragePanel({ coverage }: { coverage: Coverage | null }) {
   return (
     <div
       style={{
-        border: "1px solid #e5e7eb",
-        borderRadius: 12,
-        padding: "10px 12px",
-        background: "#fcfcfd",
+        border: "1px solid rgba(255,255,255,0.08)",
+        borderRadius: 14,
+        padding: "14px 14px",
+        background: "rgba(255,255,255,0.04)",
       }}
     >
       <div
@@ -123,38 +176,46 @@ function CoveragePanel({ coverage }: { coverage: Coverage | null }) {
           display: "flex",
           justifyContent: "space-between",
           alignItems: "baseline",
-          marginBottom: 8,
+          marginBottom: 12,
         }}
       >
-        <span style={{ fontSize: 12, fontWeight: 700, color: "#374151" }}>
+        <span
+          style={{
+            fontSize: 11,
+            fontWeight: 800,
+            letterSpacing: "0.08em",
+            color: "#9fb4d6",
+          }}
+        >
           観点バランス
         </span>
         <span
           style={{
-            fontSize: 11,
+            fontSize: 10,
             fontWeight: 700,
             padding: "2px 8px",
             borderRadius: 999,
-            border: coverage.balanced ? "1px solid #bbf7d0" : "1px solid #fde68a",
-            background: coverage.balanced ? "#f0fdf4" : "#fffbeb",
-            color: coverage.balanced ? "#15803d" : "#b45309",
+            border: coverage.balanced
+              ? "1px solid rgba(52,211,153,0.4)"
+              : "1px solid rgba(251,191,36,0.4)",
+            background: coverage.balanced
+              ? "rgba(52,211,153,0.12)"
+              : "rgba(251,191,36,0.12)",
+            color: coverage.balanced ? "#6ee7b7" : "#fcd34d",
           }}
         >
-          {coverage.balanced ? "まんべんなく取れています" : "偏りあり"}
+          {coverage.balanced ? "バランス良好" : "偏りあり"}
         </span>
       </div>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
         {coverage.axes.map((a) => (
-          <div
-            key={a.id}
-            style={{ display: "flex", alignItems: "center", gap: 8 }}
-          >
+          <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <span
               style={{
                 fontSize: 11,
-                color: "#6b7280",
-                width: 84,
+                color: "#aebfda",
+                width: 76,
                 flexShrink: 0,
                 whiteSpace: "nowrap",
                 overflow: "hidden",
@@ -168,7 +229,7 @@ function CoveragePanel({ coverage }: { coverage: Coverage | null }) {
               style={{
                 flex: 1,
                 height: 6,
-                background: "#eef0f3",
+                background: "rgba(255,255,255,0.08)",
                 borderRadius: 999,
                 overflow: "hidden",
               }}
@@ -183,25 +244,14 @@ function CoveragePanel({ coverage }: { coverage: Coverage | null }) {
                 }}
               />
             </div>
-            <span
-              style={{
-                fontSize: 10,
-                color: "#9ca3af",
-                width: 30,
-                textAlign: "right",
-                flexShrink: 0,
-              }}
-            >
-              {Math.round(a.score * 100)}%
-            </span>
           </div>
         ))}
       </div>
 
-      <div style={{ marginTop: 8, fontSize: 11, color: "#9ca3af" }}>
+      <div style={{ marginTop: 12, fontSize: 10, color: "#7e93b8" }}>
         充足度 {covPct}% ・ 均等度 {evenPct}%
         {!coverage.balanced && weakest && weakest.score < 0.5 && (
-          <span>　手薄: {weakest.label}</span>
+          <span>　/　手薄: {weakest.label}</span>
         )}
       </div>
     </div>
@@ -219,6 +269,7 @@ export default function ChatClient() {
     total: 0,
     inFollowup: false,
     mode: "idle",
+    currentKey: null,
     coverage: null,
     aiAvailable: true,
     aiReason: "ok",
@@ -242,6 +293,7 @@ export default function ChatClient() {
       total: Number(meta.totalSlots ?? 0),
       inFollowup: !!meta.inFollowup,
       mode: meta.mode ?? "idle",
+      currentKey: (meta.currentKey as string) ?? null,
       coverage: (meta.coverage as Coverage) ?? null,
       aiAvailable: meta.aiAvailable !== false,
       aiReason: (meta.aiReason as Progress["aiReason"]) ?? "ok",
@@ -387,273 +439,417 @@ export default function ChatClient() {
       ? Math.round((progress.answered / progress.total) * 100)
       : 0;
 
+  const stepLabel = progress.currentKey
+    ? STEP_LABEL[progress.currentKey] ?? null
+    : null;
+  const stepText = isDone
+    ? "対話を振り返り中"
+    : progress.total > 0
+    ? `質問 ${Math.min(progress.answered + 1, progress.total)} / ${progress.total}`
+    : "読み込み中…";
+
   return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        gap: 10,
-        height: "100%",
-        minHeight: 0,
-        background: "#fff",
-        color: "#111",
-        border: "1px solid #e5e7eb",
-        borderRadius: 14,
-        padding: 12,
-      }}
-    >
-      {/* 進捗バー（全体の進行度） */}
-      <div>
+    <div className="app-shell">
+      {/* ===== 左：ダッシュボード ===== */}
+      <aside className="app-sidebar">
         <div
           style={{
             display: "flex",
-            justifyContent: "space-between",
-            alignItems: "baseline",
-            marginBottom: 6,
-            fontSize: 12,
-            color: "#6b7280",
+            alignItems: "center",
+            gap: 12,
           }}
         >
-          <span style={{ fontWeight: 700, color: "#374151" }}>
-            {isDone
-              ? "ご入力完了"
-              : progress.total > 0
-              ? `質問 ${Math.min(progress.answered + 1, progress.total)} / ${progress.total}`
-              : "読み込み中…"}
+          <div
+            style={{
+              width: 40,
+              height: 40,
+              borderRadius: 11,
+              background: "linear-gradient(135deg,#0f62fe,#4589ff)",
+              display: "grid",
+              placeItems: "center",
+              fontWeight: 900,
+              fontSize: 15,
+              letterSpacing: "0.04em",
+              color: "#fff",
+              boxShadow: "0 6px 16px rgba(15,98,254,0.4)",
+              flexShrink: 0,
+            }}
+          >
+            IBM
+          </div>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 14, fontWeight: 800, color: "#fff" }}>
+              就活の軸を深める対話
+            </div>
+            <div style={{ fontSize: 11, color: "#8aa0c4" }}>
+              Career Axis Studio
+            </div>
+          </div>
+        </div>
+
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 16,
+          }}
+        >
+          <ProgressRing pct={pct} isDone={isDone} />
+          <div className="sidebar-detail" style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 12, color: "#8aa0c4" }}>現在のステップ</div>
+            <div
+              style={{
+                fontSize: 16,
+                fontWeight: 800,
+                color: "#fff",
+                marginTop: 2,
+              }}
+            >
+              {stepLabel ?? (isDone ? "まとめ" : "—")}
+            </div>
+            <div style={{ fontSize: 11, color: "#9fb4d6", marginTop: 4 }}>
+              {stepText}
+            </div>
             {progress.inFollowup && !isDone && (
               <span
                 style={{
-                  marginLeft: 8,
-                  padding: "2px 8px",
+                  display: "inline-block",
+                  marginTop: 8,
+                  padding: "3px 9px",
                   borderRadius: 999,
-                  background: "#eef2ff",
-                  color: "#4338ca",
-                  border: "1px solid #c7d2fe",
-                  fontSize: 11,
+                  background: "rgba(69,137,255,0.16)",
+                  color: "#9ec1ff",
+                  border: "1px solid rgba(69,137,255,0.35)",
+                  fontSize: 10,
                   fontWeight: 700,
                 }}
               >
-                追加のご質問
+                深掘り中
               </span>
             )}
-          </span>
-          <span>{pct}%</span>
+          </div>
         </div>
-        <div
-          style={{
-            height: 8,
-            width: "100%",
-            background: "#eef0f3",
-            borderRadius: 999,
-            overflow: "hidden",
-          }}
-        >
+
+        <div className="sidebar-detail">
+          <CoveragePanel coverage={progress.coverage} />
+        </div>
+
+        {!progress.aiAvailable && (
           <div
+            className="sidebar-detail"
             style={{
-              height: "100%",
-              width: `${pct}%`,
-              background: isDone ? "#16a34a" : "#111",
-              borderRadius: 999,
-              transition: "width 320ms ease",
+              display: "flex",
+              alignItems: "flex-start",
+              gap: 8,
+              padding: "10px 12px",
+              borderRadius: 12,
+              background: "rgba(251,191,36,0.10)",
+              border: "1px solid rgba(251,191,36,0.3)",
+              color: "#fcd34d",
+              fontSize: 11,
+              lineHeight: 1.5,
             }}
-          />
-        </div>
-        {progress.inFollowup && !isDone && (
-          <div style={{ marginTop: 4, fontSize: 11, color: "#9ca3af" }}>
-            ※ ご回答内容に応じて、追加のご質問をさせていただく場合がございます
+            role="status"
+          >
+            <span aria-hidden style={{ fontWeight: 800 }}>
+              !
+            </span>
+            <span>
+              {progress.aiReason === "no_key"
+                ? "AI応答は現在オフです。定型のご質問でお伺いします（回答は記録されます）。"
+                : "AI応答が一時的に利用しづらい状況です。復旧まで定型のご質問でお伺いします。"}
+            </span>
           </div>
         )}
-      </div>
 
-      {/* AIが使えないときの案内（鍵なし／429・ネットワーク等でバックオフ中） */}
-      {!progress.aiAvailable && (
-        <div
-          style={{
-            display: "flex",
-            alignItems: "flex-start",
-            gap: 8,
-            padding: "8px 10px",
-            borderRadius: 10,
-            background: "#fffbeb",
-            border: "1px solid #fde68a",
-            color: "#92400e",
-            fontSize: 12,
-            lineHeight: 1.5,
-          }}
-          role="status"
+        <div className="sidebar-spacer" style={{ flex: 1 }} />
+
+        <p
+          className="sidebar-detail"
+          style={{ fontSize: 11, color: "#6f84a8", lineHeight: 1.6, margin: 0 }}
         >
-          <span aria-hidden style={{ fontWeight: 700 }}>!</span>
-          <span>
-            {progress.aiReason === "no_key"
-              ? "現在AIによる応答機能が無効です。定型のご質問でお伺いします（ご回答は問題なく記録されます）。"
-              : "現在、AIによる応答が一時的に利用しづらい状況です。復旧するまで定型のご質問でお伺いします（ご回答は問題なく記録されます）。"}
-          </span>
-        </div>
-      )}
+          合否を決めるものではありません。気になることはいつでも質問でき、
+          途中の感覚のままでも大丈夫です。
+        </p>
+      </aside>
 
-      {/* 観点バランス（取れたデータから数式で算出） */}
-      <CoveragePanel coverage={progress.coverage} />
-
-      {warning && (
-        <div
-          style={{
-            padding: 10,
-            border: "1px solid #fca5a5",
-            borderRadius: 10,
-            background: "#fef2f2",
-            fontSize: 13,
-          }}
-        >
-          {warning}
-        </div>
-      )}
-
-      {/* メッセージ一覧 */}
-      <div
-        ref={scrollRef}
-        style={{
-          flex: 1,
-          minHeight: 0,
-          overflowY: "auto",
-          paddingRight: 4,
-        }}
-      >
-        {messages.map((m) =>
-          m.role === "bot" && m.text === "" ? null : (
+      {/* ===== 右：チャット ===== */}
+      <main className="app-main">
+        <div className="app-topbar">
           <div
-            key={m.id}
             style={{
-              margin: "10px 0",
               display: "flex",
-              justifyContent: m.role === "user" ? "flex-end" : "flex-start",
+              justifyContent: "space-between",
+              alignItems: "baseline",
+              marginBottom: 8,
+            }}
+          >
+            <span style={{ fontSize: 13, fontWeight: 800, color: "#0f172a" }}>
+              {isDone ? "対話が完了しました" : stepLabel ?? "IBM理解と就活の軸を深める対話"}
+            </span>
+            <span style={{ fontSize: 12, color: "#64748b", fontWeight: 700 }}>
+              {pct}%
+            </span>
+          </div>
+          <div
+            style={{
+              height: 6,
+              width: "100%",
+              background: "#e6e9f0",
+              borderRadius: 999,
+              overflow: "hidden",
             }}
           >
             <div
               style={{
-                maxWidth: "80%",
-                padding: "10px 12px",
-                borderRadius: 14,
-                border: "1px solid #e5e7eb",
-                background: m.role === "user" ? "#111" : "#f9fafb",
-                color: m.role === "user" ? "#fff" : "#111",
-                whiteSpace: "pre-wrap",
-                lineHeight: 1.6,
-                fontSize: 14,
+                height: "100%",
+                width: `${pct}%`,
+                background: isDone
+                  ? "linear-gradient(90deg,#22c55e,#34d399)"
+                  : "linear-gradient(90deg,#0f62fe,#4589ff)",
+                borderRadius: 999,
+                transition: "width 320ms ease",
+              }}
+            />
+          </div>
+        </div>
+
+        <div ref={scrollRef} className="chat-scroll">
+          <div className="chat-inner">
+            {messages.map((m) =>
+              m.role === "bot" && m.text === "" ? null : (
+                <div
+                  key={m.id}
+                  style={{
+                    display: "flex",
+                    gap: 10,
+                    alignItems: "flex-start",
+                    justifyContent:
+                      m.role === "user" ? "flex-end" : "flex-start",
+                  }}
+                >
+                  {m.role === "bot" && (
+                    <div
+                      style={{
+                        width: 30,
+                        height: 30,
+                        borderRadius: 9,
+                        flexShrink: 0,
+                        background: "linear-gradient(135deg,#0f62fe,#4589ff)",
+                        color: "#fff",
+                        display: "grid",
+                        placeItems: "center",
+                        fontSize: 11,
+                        fontWeight: 800,
+                        marginTop: 2,
+                      }}
+                    >
+                      AI
+                    </div>
+                  )}
+                  <div
+                    style={{
+                      maxWidth: "78%",
+                      padding: "12px 15px",
+                      borderRadius:
+                        m.role === "user"
+                          ? "16px 6px 16px 16px"
+                          : "6px 16px 16px 16px",
+                      border:
+                        m.role === "user"
+                          ? "none"
+                          : "1px solid #e6e9f0",
+                      background:
+                        m.role === "user"
+                          ? "linear-gradient(135deg,#0f62fe,#4589ff)"
+                          : "#ffffff",
+                      color: m.role === "user" ? "#fff" : "#0f172a",
+                      whiteSpace: "pre-wrap",
+                      lineHeight: 1.7,
+                      fontSize: 14,
+                      boxShadow:
+                        m.role === "user"
+                          ? "0 6px 16px rgba(15,98,254,0.22)"
+                          : "0 1px 2px rgba(16,24,40,0.05)",
+                    }}
+                  >
+                    {m.text}
+                  </div>
+                </div>
+              )
+            )}
+            {busy && (
+              <div
+                style={{
+                  display: "flex",
+                  gap: 10,
+                  alignItems: "center",
+                  color: "#94a3b8",
+                  fontSize: 13,
+                }}
+              >
+                <div
+                  style={{
+                    width: 30,
+                    height: 30,
+                    borderRadius: 9,
+                    background: "linear-gradient(135deg,#0f62fe,#4589ff)",
+                    color: "#fff",
+                    display: "grid",
+                    placeItems: "center",
+                    fontSize: 11,
+                    fontWeight: 800,
+                    opacity: 0.7,
+                  }}
+                >
+                  AI
+                </div>
+                回答を作成しています…
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="input-dock">
+          <div className="input-inner">
+            {warning && (
+              <div
+                style={{
+                  padding: "10px 12px",
+                  marginBottom: 10,
+                  border: "1px solid #fca5a5",
+                  borderRadius: 12,
+                  background: "#fef2f2",
+                  color: "#b91c1c",
+                  fontSize: 13,
+                }}
+              >
+                {warning}
+              </div>
+            )}
+            <div
+              style={{
+                display: "flex",
+                gap: 10,
+                alignItems: "flex-end",
+                background: isDone ? "#f3f4f6" : "#fff",
+                border: "1px solid #d7dce5",
+                borderRadius: 16,
+                padding: 8,
+                boxShadow: "0 2px 10px rgba(16,24,40,0.04)",
               }}
             >
-              {m.text}
+              <textarea
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    if (canSend) send(input);
+                  }
+                }}
+                placeholder={
+                  isDone
+                    ? "対話は完了しています"
+                    : "メッセージを入力（Enterで送信 / Shift+Enterで改行）"
+                }
+                disabled={busy || isDone}
+                rows={1}
+                style={{
+                  flex: 1,
+                  resize: "none",
+                  padding: "8px 10px",
+                  border: "none",
+                  outline: "none",
+                  background: "transparent",
+                  color: "#0f172a",
+                  fontSize: 14,
+                  lineHeight: 1.6,
+                  fontFamily: "inherit",
+                  maxHeight: 160,
+                  minHeight: 24,
+                }}
+              />
+              <button
+                className="send-btn"
+                onClick={() => canSend && send(input)}
+                disabled={!canSend}
+                style={{
+                  padding: "10px 18px",
+                  borderRadius: 12,
+                  border: "none",
+                  background: canSend
+                    ? "linear-gradient(135deg,#0f62fe,#4589ff)"
+                    : "#e5e7eb",
+                  color: canSend ? "#fff" : "#9ca3af",
+                  cursor: canSend ? "pointer" : "default",
+                  fontWeight: 800,
+                  whiteSpace: "nowrap",
+                  flexShrink: 0,
+                }}
+              >
+                送信
+              </button>
+            </div>
+
+            <div
+              style={{
+                marginTop: 10,
+                display: "flex",
+                justifyContent: "space-between",
+                gap: 8,
+              }}
+            >
+              <button
+                className="ghost-btn"
+                onClick={() => {
+                  if (busy || isDone) return;
+                  send(SKIP_COMMAND, "答えにくい・特になし");
+                }}
+                disabled={busy || isDone}
+                title="この質問に答えにくい場合や、特になしの場合に次へ進みます"
+                style={{
+                  padding: "7px 13px",
+                  borderRadius: 10,
+                  border: "1px solid #d7dce5",
+                  background: busy || isDone ? "#f3f4f6" : "#fff",
+                  color: busy || isDone ? "#9ca3af" : "#475569",
+                  cursor: busy || isDone ? "default" : "pointer",
+                  fontSize: 13,
+                  fontWeight: 600,
+                }}
+              >
+                答えにくい・特になし
+              </button>
+
+              <button
+                className="ghost-btn"
+                onClick={() => {
+                  if (busy) return;
+                  if (
+                    window.confirm("入力内容をすべて削除し、最初からやり直しますか？")
+                  ) {
+                    send(RESET_COMMAND, "最初から入力し直す");
+                  }
+                }}
+                disabled={busy}
+                style={{
+                  padding: "7px 13px",
+                  borderRadius: 10,
+                  border: "1px solid #d7dce5",
+                  background: "#fff",
+                  color: "#475569",
+                  cursor: busy ? "default" : "pointer",
+                  fontSize: 13,
+                  fontWeight: 600,
+                }}
+              >
+                最初から入力し直す
+              </button>
             </div>
           </div>
-          )
-        )}
-        {busy && <div style={{ color: "#9ca3af", fontSize: 13 }}>回答を作成しています…</div>}
-      </div>
-
-      {/* 入力エリア */}
-      <div
-        style={{
-          borderTop: "1px solid #eee",
-          paddingTop: 10,
-        }}
-      >
-        <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
-          <textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                if (canSend) send(input);
-              }
-            }}
-            placeholder={
-              isDone
-                ? "ご入力は完了しています"
-                : "ご回答を入力してください（Enterで送信 / Shift+Enterで改行）"
-            }
-            disabled={busy || isDone}
-            rows={2}
-            style={{
-              flex: 1,
-              resize: "none",
-              padding: "10px 12px",
-              borderRadius: 12,
-              border: "1px solid #ddd",
-              background: isDone ? "#f3f4f6" : "#fff",
-              color: "#111",
-              fontSize: 14,
-              lineHeight: 1.5,
-              fontFamily: "inherit",
-            }}
-          />
-          <button
-            onClick={() => canSend && send(input)}
-            disabled={!canSend}
-            style={{
-              padding: "10px 16px",
-              borderRadius: 12,
-              border: "1px solid #111",
-              background: canSend ? "#111" : "#e5e7eb",
-              color: canSend ? "#fff" : "#9ca3af",
-              cursor: canSend ? "pointer" : "default",
-              fontWeight: 700,
-              whiteSpace: "nowrap",
-            }}
-          >
-            送信
-          </button>
         </div>
-
-        <div
-          style={{
-            marginTop: 8,
-            display: "flex",
-            justifyContent: "space-between",
-            gap: 8,
-          }}
-        >
-          <button
-            onClick={() => {
-              if (busy || isDone) return;
-              send(SKIP_COMMAND, "答えにくい・特になし");
-            }}
-            disabled={busy || isDone}
-            title="この質問に答えにくい場合や、特になしの場合に次へ進みます"
-            style={{
-              padding: "6px 12px",
-              borderRadius: 10,
-              border: "1px solid #ccc",
-              background: busy || isDone ? "#f3f4f6" : "#fff",
-              color: busy || isDone ? "#9ca3af" : "#374151",
-              cursor: busy || isDone ? "default" : "pointer",
-              fontSize: 13,
-            }}
-          >
-            答えにくい・特になし
-          </button>
-
-          <button
-            onClick={() => {
-              if (busy) return;
-              if (window.confirm("入力内容をすべて削除し、最初からやり直しますか？")) {
-                send(RESET_COMMAND, "最初から入力し直す");
-              }
-            }}
-            disabled={busy}
-            style={{
-              padding: "6px 12px",
-              borderRadius: 10,
-              border: "1px solid #ccc",
-              background: "#f9fafb",
-              color: "#374151",
-              cursor: busy ? "default" : "pointer",
-              fontSize: 13,
-            }}
-          >
-            最初から入力し直す
-          </button>
-        </div>
-      </div>
+      </main>
     </div>
   );
 }

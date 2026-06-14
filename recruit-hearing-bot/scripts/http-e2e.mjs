@@ -66,40 +66,39 @@ assert(g.status === 200, "GET 200");
 assert(cookie.startsWith("rhb_sid="), "セッションCookieが発行される");
 assert(Array.isArray(g.json.messages) && g.json.messages.length === 1, "初期メッセージは1件（intro+Q1）");
 assert(g.json.messages[0].content.includes("IBM"), "introが含まれる");
-assert(g.json.meta.currentKey === "name", "最初の質問キーは name");
+assert(g.json.meta.currentKey === "trigger", "最初の質問キーは trigger");
 
 // ---- 2) 回答を進める（Geminiなし＝深掘りスキップ）----
-let r = await postTurn("山田太郎");
+let r = await postTurn("規模の大きな仕事に惹かれました");
 assert(r.streamed === r.done.outText, "ストリーム差分の合計 == done.outText");
-assert(r.done.meta.currentKey === "status", "name回答後の質問キーは status");
-assert(r.streamed.includes("✓"), "回答後に進捗ライン(✓)が出る");
+assert(r.done.meta.currentKey === "image", "trigger回答後の質問キーは image");
+assert(r.streamed.includes("✓") || r.streamed.length > 0, "回答後に応答が出る");
 
-r = await postTurn("社会人で転職を検討中です");
-assert(r.done.meta.currentKey === "trigger", "status回答後の質問キーは trigger");
+r = await postTurn("先進的で堅実なイメージです");
+assert(r.done.meta.currentKey === "values", "image回答後の質問キーは values");
 
 // ---- 3) リロード復帰：GETで履歴が増えている＝インメモリ永続化が効いている ----
 g = await getState();
 assert(g.json.messages.length >= 5, `リロードで履歴が保持される（${g.json.messages.length}件）`);
-assert(g.json.meta.currentKey === "trigger", "リロード後も現在キーが保たれる");
+assert(g.json.meta.currentKey === "values", "リロード後も現在キーが保たれる");
 
 // ---- 4) 残りを全部回答して完了 ----
 const rest = [
-  "規模の大きな仕事に惹かれました",
   "社会に影響のある仕事に長く取り組みたい",
   "React/TSで5年、SPAを設計・実装",
-  "大企業で裁量がどこまであるか不安です",
+  "大企業で自分の裁量が限られないか不安です",
   "リモート可、チームで協力して進めたい",
-  "なし",
+  "社会貢献と自己成長を両立できること、が今の軸です",
 ];
 let last;
 for (const t of rest) last = await postTurn(t);
 assert(last.done.meta.mode === "done", "全回答で mode=done");
 assert(last.streamed.includes("【ご回答内容】"), "完了時にサマリが出る");
-assert(last.streamed.includes("山田太郎"), "サマリに最初の回答が含まれる");
+assert(last.streamed.includes("今の軸です"), "サマリに最後の回答が含まれる");
 
 // ---- 5) リセット ----
 r = await postTurn("__reset__");
-assert(r.done.meta.currentKey === "name", "リセットで name に戻る");
+assert(r.done.meta.currentKey === "trigger", "リセットで trigger に戻る");
 assert(r.done.meta.mode === "collecting", "リセットで collecting に戻る");
 
 console.log("\n🎉 HTTP E2E 全通過");

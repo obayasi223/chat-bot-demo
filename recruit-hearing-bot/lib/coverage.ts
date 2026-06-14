@@ -25,7 +25,8 @@ export type AxisDef = {
 /** ヒアリングの分析軸。flows のスロットkeyに対応（存在するものだけ採点）。 */
 export const COVERAGE_AXES: AxisDef[] = [
   { id: "motivation", label: "動機・きっかけ", slots: ["trigger"] },
-  { id: "values", label: "価値観", slots: ["values"] },
+  { id: "understanding", label: "IBM理解", slots: ["image"] },
+  { id: "values", label: "価値観・軸", slots: ["values"] },
   { id: "strengths", label: "強み・経験", slots: ["strengths"] },
   { id: "concerns", label: "不安・迷い", slots: ["concerns"] },
   { id: "work_style", label: "働き方", slots: ["work_style"] },
