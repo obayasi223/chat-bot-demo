@@ -100,6 +100,8 @@ export const circuits = {
   classify: new AICircuit("classify", { windowMs, threshold, cooldownMs }),
   answer: new AICircuit("answer", { windowMs, threshold, cooldownMs }),
   deepen: new AICircuit("deepen", { windowMs, threshold, cooldownMs }),
+  assist: new AICircuit("assist", { windowMs, threshold, cooldownMs }),
+  gapfill: new AICircuit("gapfill", { windowMs, threshold, cooldownMs }),
 } as const;
 
 export type CircuitName = keyof typeof circuits;

@@ -8,6 +8,25 @@ type Msg = {
   text: string;
 };
 
+type AxisScore = {
+  id: string;
+  label: string;
+  score: number;
+  answered: boolean;
+};
+
+type Coverage = {
+  axes: AxisScore[];
+  coverage: number;
+  evenness: number;
+  balance: number;
+  min: number;
+  max: number;
+  weakestAxisId: string | null;
+  gaps: string[];
+  balanced: boolean;
+};
+
 type Meta = {
   flowId: string | null;
   mode: "idle" | "collecting" | "done";
@@ -16,6 +35,7 @@ type Meta = {
   answeredCount: number;
   totalSlots: number;
   inFollowup: boolean;
+  coverage?: Coverage;
 };
 
 type Progress = {
@@ -23,9 +43,11 @@ type Progress = {
   total: number;
   inFollowup: boolean;
   mode: Meta["mode"];
+  coverage: Coverage | null;
 };
 
 const RESET_COMMAND = "__reset__";
+const SKIP_COMMAND = "__skip__";
 
 function uid() {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
@@ -66,6 +88,122 @@ async function readErrorResponse(res: Response): Promise<string> {
   );
 }
 
+// スコア(0..1)に応じた色（緑=十分 / 橙=手薄 / 灰=未取得）
+function scoreColor(score: number, answered: boolean): string {
+  if (!answered || score <= 0) return "#e5e7eb";
+  if (score >= 0.5) return "#16a34a";
+  return "#f59e0b";
+}
+
+// 観点ごとの取れ具合と全体の均等度を表示する小さなパネル
+function CoveragePanel({ coverage }: { coverage: Coverage | null }) {
+  if (!coverage || coverage.axes.length === 0) return null;
+  const anyAnswered = coverage.axes.some((a) => a.answered);
+  if (!anyAnswered) return null;
+
+  const weakest = coverage.axes.find((a) => a.id === coverage.weakestAxisId);
+  const evenPct = Math.round(coverage.evenness * 100);
+  const covPct = Math.round(coverage.coverage * 100);
+
+  return (
+    <div
+      style={{
+        border: "1px solid #e5e7eb",
+        borderRadius: 12,
+        padding: "10px 12px",
+        background: "#fcfcfd",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "baseline",
+          marginBottom: 8,
+        }}
+      >
+        <span style={{ fontSize: 12, fontWeight: 700, color: "#374151" }}>
+          観点バランス
+        </span>
+        <span
+          style={{
+            fontSize: 11,
+            fontWeight: 700,
+            padding: "2px 8px",
+            borderRadius: 999,
+            border: coverage.balanced ? "1px solid #bbf7d0" : "1px solid #fde68a",
+            background: coverage.balanced ? "#f0fdf4" : "#fffbeb",
+            color: coverage.balanced ? "#15803d" : "#b45309",
+          }}
+        >
+          {coverage.balanced ? "まんべんなく取れています" : "偏りあり"}
+        </span>
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {coverage.axes.map((a) => (
+          <div
+            key={a.id}
+            style={{ display: "flex", alignItems: "center", gap: 8 }}
+          >
+            <span
+              style={{
+                fontSize: 11,
+                color: "#6b7280",
+                width: 84,
+                flexShrink: 0,
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+              title={a.label}
+            >
+              {a.label}
+            </span>
+            <div
+              style={{
+                flex: 1,
+                height: 6,
+                background: "#eef0f3",
+                borderRadius: 999,
+                overflow: "hidden",
+              }}
+            >
+              <div
+                style={{
+                  height: "100%",
+                  width: `${Math.round(a.score * 100)}%`,
+                  background: scoreColor(a.score, a.answered),
+                  borderRadius: 999,
+                  transition: "width 320ms ease",
+                }}
+              />
+            </div>
+            <span
+              style={{
+                fontSize: 10,
+                color: "#9ca3af",
+                width: 30,
+                textAlign: "right",
+                flexShrink: 0,
+              }}
+            >
+              {Math.round(a.score * 100)}%
+            </span>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ marginTop: 8, fontSize: 11, color: "#9ca3af" }}>
+        充足度 {covPct}% ・ 均等度 {evenPct}%
+        {!coverage.balanced && weakest && weakest.score < 0.5 && (
+          <span>　手薄: {weakest.label}</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function ChatClient() {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
@@ -77,6 +215,7 @@ export default function ChatClient() {
     total: 0,
     inFollowup: false,
     mode: "idle",
+    coverage: null,
   });
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -97,6 +236,7 @@ export default function ChatClient() {
       total: Number(meta.totalSlots ?? 0),
       inFollowup: !!meta.inFollowup,
       mode: meta.mode ?? "idle",
+      coverage: (meta.coverage as Coverage) ?? null,
     });
   }, []);
 
@@ -317,6 +457,9 @@ export default function ChatClient() {
         )}
       </div>
 
+      {/* 観点バランス（取れたデータから数式で算出） */}
+      <CoveragePanel coverage={progress.coverage} />
+
       {warning && (
         <div
           style={{
@@ -427,7 +570,34 @@ export default function ChatClient() {
           </button>
         </div>
 
-        <div style={{ marginTop: 8, display: "flex", justifyContent: "flex-end" }}>
+        <div
+          style={{
+            marginTop: 8,
+            display: "flex",
+            justifyContent: "space-between",
+            gap: 8,
+          }}
+        >
+          <button
+            onClick={() => {
+              if (busy || isDone) return;
+              send(SKIP_COMMAND, "答えにくい・特になし");
+            }}
+            disabled={busy || isDone}
+            title="この質問に答えにくい場合や、特になしの場合に次へ進みます"
+            style={{
+              padding: "6px 12px",
+              borderRadius: 10,
+              border: "1px solid #ccc",
+              background: busy || isDone ? "#f3f4f6" : "#fff",
+              color: busy || isDone ? "#9ca3af" : "#374151",
+              cursor: busy || isDone ? "default" : "pointer",
+              fontSize: 13,
+            }}
+          >
+            答えにくい・特になし
+          </button>
+
           <button
             onClick={() => {
               if (busy) return;

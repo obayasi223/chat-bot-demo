@@ -3,14 +3,22 @@
 
 export type Role = "user" | "bot";
 
+/** 回答からAIが推定した「情報の十分さ」 */
+export type Sufficiency =
+  | "sufficient" // 本人を理解するのに十分に語られた
+  | "partial" // 一部のみ。深掘り上限到達やスキップで前進した
+  | "unknown"; // 未判定（AI不可・非深掘りスロットなど）
+
 /** 1スロット（質問項目）への回答 */
 export type AnswerValue = {
   /** ユーザーが最初に答えた本文 */
   raw: string;
   /** その質問のラベル（並び順や出力用に保持） */
   questionText: string;
-  /** AI深掘りで追加収集した Q&A（最大1往復） */
+  /** AI深掘りで追加収集した Q&A（複数往復あり） */
   followups?: Array<{ question: string; answer: string }>;
+  /** 回答から推定した情報の十分さ（「十分に取れたか」の推測結果） */
+  sufficiency?: Sufficiency;
   createdAt: string; // ISO
 };
 
@@ -20,8 +28,15 @@ export type PendingFollowup = {
   key: string;
   /** ユーザーに出している深掘り質問文 */
   question: string;
-  /** 深掘りラウンド（MVPは1回まで） */
+  /** これまでに出した深掘り質問の回数（1始まり。上限は AI_DEEPEN_MAX_ROUNDS） */
   round: number;
+  /**
+   * 質問の種類:
+   * - "deepen"  : 通常の深掘り（回答の十分性判定ループ）
+   * - "gapfill" : 終盤、手薄な観点を補う「開かれた質問」
+   * 省略時は "deepen" とみなす。
+   */
+  kind?: "deepen" | "gapfill";
 } | null;
 
 export type State = {
@@ -35,6 +50,8 @@ export type State = {
   answers: Record<string, AnswerValue>;
   /** 深掘り待ち */
   pendingFollowup: PendingFollowup;
+  /** 終盤の観点ギャップ補完で、これまでに尋ねた回数（上限は AI_GAPFILL_MAX_QUESTIONS） */
+  gapfillAsked?: number;
   /** リロード復帰用：最後にbotが出した文面 */
   lastBotText?: string;
 };

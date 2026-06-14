@@ -11,6 +11,16 @@ import { circuits, type AiFailType, type CircuitName } from "./circuit";
 
 const TIMEOUT_MS = Number(process.env.AI_TIMEOUT_MS ?? "10000");
 const SLOW_MS = Number(process.env.AI_SLOW_MS ?? "6000");
+
+// フェーズ別モデル上書き（未設定なら gemini.ts の既定モデル）。
+function phaseModel(circuit: CircuitName): string | undefined {
+  if (circuit === "classify") return process.env.AI_CLASSIFY_MODEL || undefined;
+  if (circuit === "answer") return process.env.AI_ANSWER_MODEL || undefined;
+  if (circuit === "deepen") return process.env.AI_DEEPEN_MODEL || undefined;
+  if (circuit === "assist") return process.env.AI_ASSIST_MODEL || undefined;
+  if (circuit === "gapfill") return process.env.AI_GAPFILL_MODEL || undefined;
+  return undefined;
+}
 const LOG_LEVEL = (process.env.AI_LOG_LEVEL ?? "warn") as
   | "off"
   | "error"
@@ -101,7 +111,13 @@ export async function runText(
   phase: string,
   circuit: CircuitName,
   prompt: string,
-  opts?: { timeoutMs?: number; maxOutputTokens?: number; temperature?: number }
+  opts?: {
+    timeoutMs?: number;
+    maxOutputTokens?: number;
+    temperature?: number;
+    thinkingBudget?: number;
+    model?: string;
+  }
 ): Promise<AiRunResult<string>> {
   const t0 = Date.now();
   if (!hasGemini()) return { ok: false, reason: "no_key", elapsedMs: 0 };
@@ -118,6 +134,8 @@ export async function runText(
         signal: ac.signal,
         maxOutputTokens: opts?.maxOutputTokens,
         temperature: opts?.temperature,
+        thinkingBudget: opts?.thinkingBudget,
+        model: opts?.model ?? phaseModel(circuit),
       }),
       timeoutMs,
       ac.signal
@@ -147,7 +165,13 @@ export async function runStream(
   circuit: CircuitName,
   prompt: string,
   onDelta: (text: string) => void,
-  opts?: { timeoutMs?: number; maxOutputTokens?: number; temperature?: number }
+  opts?: {
+    timeoutMs?: number;
+    maxOutputTokens?: number;
+    temperature?: number;
+    thinkingBudget?: number;
+    model?: string;
+  }
 ): Promise<AiRunResult<string>> {
   const t0 = Date.now();
   if (!hasGemini()) return { ok: false, reason: "no_key", elapsedMs: 0 };
@@ -166,6 +190,8 @@ export async function runStream(
       signal: ac.signal,
       maxOutputTokens: opts?.maxOutputTokens,
       temperature: opts?.temperature,
+      thinkingBudget: opts?.thinkingBudget,
+      model: opts?.model ?? phaseModel(circuit),
     })) {
       if (ac.signal.aborted) break;
       acc += delta;

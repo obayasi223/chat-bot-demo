@@ -7,7 +7,13 @@ import { NextResponse } from "next/server";
 import { getOrCreateSessionId } from "@/lib/session";
 import { loadState, saveState } from "@/lib/dbState";
 import { appendMessage, getMessages } from "@/lib/dbMessages";
-import { handleTurnStream, startFlow, metaOf, RESET_COMMAND } from "@/lib/handleText";
+import {
+  handleTurnStream,
+  startFlow,
+  metaOf,
+  RESET_COMMAND,
+  SKIP_COMMAND,
+} from "@/lib/handleText";
 import {
   AppError,
   toAppError,
@@ -23,6 +29,7 @@ export const maxDuration = 30;
 // 内部コマンドを人間に読める表示へ変換（チャットログ用）
 function displayUserText(text: string): string {
   if (text === RESET_COMMAND) return "最初から入力し直す";
+  if (text === SKIP_COMMAND) return "答えにくい・特になし";
   return text;
 }
 
@@ -45,6 +52,24 @@ async function step<T>(code: ErrorCode, fn: () => Promise<T>): Promise<T> {
     return await fn();
   } catch (e) {
     throw new AppError(code, e instanceof Error ? e.message : String(e));
+  }
+}
+
+// メッセージ記録（非致命：失敗してもログのみで会話は継続）
+async function safeAppend(
+  requestId: string,
+  sid: string,
+  role: "user" | "bot",
+  content: string
+): Promise<void> {
+  try {
+    await appendMessage(sid, role, content);
+  } catch (e) {
+    console.error("[api/hearing] append failed (non-fatal)", {
+      requestId,
+      role,
+      detail: e instanceof Error ? e.message : String(e),
+    });
   }
 }
 
@@ -93,15 +118,13 @@ export async function POST(req: Request) {
   const text = String(body?.text ?? "").trim();
   if (!text) return jsonError(new AppError("EMPTY_TEXT"), requestId);
 
-  // --- 前処理（ストリーム返却前に解決：Cookie確定・状態読込・ユーザー発話ログ） ---
+  // --- 前処理（ストリーム返却前に解決：Cookie確定・状態読込のみ） ---
+  // ※ ユーザー発話のログはストリーム処理と並列化して待ち時間を削る。
   let sid: string;
   let state;
   try {
     sid = await step("SESSION_ERROR", () => getOrCreateSessionId());
     state = await step("STATE_LOAD_ERROR", () => loadState(sid));
-    await step("MESSAGE_LOG_ERROR", () =>
-      appendMessage(sid, "user", displayUserText(text))
-    );
   } catch (e) {
     return jsonError(toAppError(e), requestId);
   }
@@ -113,23 +136,18 @@ export async function POST(req: Request) {
       const send = (obj: unknown) =>
         controller.enqueue(encoder.encode(sseEvent(obj)));
       try {
+        // ユーザー発話ログをターン処理と並行で開始（待たない）
+        const userLog = safeAppend(requestId, sid, "user", displayUserText(text));
+
         // 1ターン処理：差分はそのまま delta として流す（最速で表示）
         const result = await handleTurnStream(state, text, (delta) => {
           send({ type: "delta", text: delta });
         });
 
-        // 状態保存（失敗は致命的：エラーイベントで通知）
+        // 状態保存（致命的）と bot ログ（非致命）を並列実行
+        const botLog = safeAppend(requestId, sid, "bot", result.outText);
         await step("STATE_SAVE_ERROR", () => saveState(sid, state));
-
-        // bot応答のログ（失敗しても会話は継続：警告ログのみ）
-        try {
-          await appendMessage(sid, "bot", result.outText);
-        } catch (e) {
-          console.error("[POST /api/hearing] bot log failed (non-fatal)", {
-            requestId,
-            detail: e instanceof Error ? e.message : String(e),
-          });
-        }
+        await Promise.allSettled([userLog, botLog]);
 
         send({
           type: "done",

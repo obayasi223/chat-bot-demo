@@ -65,35 +65,36 @@ let g = await getState();
 assert(g.status === 200, "GET 200");
 assert(cookie.startsWith("rhb_sid="), "セッションCookieが発行される");
 assert(Array.isArray(g.json.messages) && g.json.messages.length === 1, "初期メッセージは1件（intro+Q1）");
-assert(g.json.messages[0].content.includes("採用エントリー"), "introが含まれる");
+assert(g.json.messages[0].content.includes("IBM"), "introが含まれる");
 assert(g.json.meta.currentKey === "name", "最初の質問キーは name");
 
 // ---- 2) 回答を進める（Geminiなし＝深掘りスキップ）----
 let r = await postTurn("山田太郎");
 assert(r.streamed === r.done.outText, "ストリーム差分の合計 == done.outText");
-assert(r.done.meta.currentKey === "role", "name回答後の質問キーは role");
+assert(r.done.meta.currentKey === "status", "name回答後の質問キーは status");
 assert(r.streamed.includes("✓"), "回答後に進捗ライン(✓)が出る");
 
-r = await postTurn("フロントエンドエンジニア");
-assert(r.done.meta.currentKey === "experience", "role回答後の質問キーは experience");
+r = await postTurn("社会人で転職を検討中です");
+assert(r.done.meta.currentKey === "trigger", "status回答後の質問キーは trigger");
 
 // ---- 3) リロード復帰：GETで履歴が増えている＝インメモリ永続化が効いている ----
 g = await getState();
 assert(g.json.messages.length >= 5, `リロードで履歴が保持される（${g.json.messages.length}件）`);
-assert(g.json.meta.currentKey === "experience", "リロード後も現在キーが保たれる");
+assert(g.json.meta.currentKey === "trigger", "リロード後も現在キーが保たれる");
 
 // ---- 4) 残りを全部回答して完了 ----
 const rest = [
-  "受託で5年、React/TSでSPAを設計・実装",
-  "React, TypeScript, Next.js",
-  "御社のUX水準に共感し貢献したい",
-  "リモート可、年収600万〜、来月入社可",
+  "規模の大きな仕事に惹かれました",
+  "社会に影響のある仕事に長く取り組みたい",
+  "React/TSで5年、SPAを設計・実装",
+  "大企業で裁量がどこまであるか不安です",
+  "リモート可、チームで協力して進めたい",
   "なし",
 ];
 let last;
 for (const t of rest) last = await postTurn(t);
 assert(last.done.meta.mode === "done", "全回答で mode=done");
-assert(last.streamed.includes("【ヒアリング内容のまとめ】"), "完了時にサマリが出る");
+assert(last.streamed.includes("【ご回答内容】"), "完了時にサマリが出る");
 assert(last.streamed.includes("山田太郎"), "サマリに最初の回答が含まれる");
 
 // ---- 5) リセット ----

@@ -21,6 +21,13 @@ export type GenOptions = {
   signal?: AbortSignal;
   maxOutputTokens?: number;
   temperature?: number;
+  /** 使用モデルの上書き（未指定は既定モデル） */
+  model?: string;
+  /**
+   * 思考(thinking)トークン数の上限。0で思考オフ＝最速。
+   * 分類・短文生成など単純タスクは 0 を推奨（Gemini 2.5 Flash のレイテンシ要因を除去）。
+   */
+  thinkingBudget?: number;
 };
 
 function buildConfig(opts?: GenOptions) {
@@ -30,6 +37,8 @@ function buildConfig(opts?: GenOptions) {
   if (typeof opts.maxOutputTokens === "number")
     config.maxOutputTokens = opts.maxOutputTokens;
   if (typeof opts.temperature === "number") config.temperature = opts.temperature;
+  if (typeof opts.thinkingBudget === "number")
+    config.thinkingConfig = { thinkingBudget: opts.thinkingBudget };
   return Object.keys(config).length > 0 ? config : undefined;
 }
 
@@ -40,7 +49,7 @@ export async function generateText(
 ): Promise<string> {
   const ai = getClient();
   const res = await ai.models.generateContent({
-    model: MODEL,
+    model: opts?.model || MODEL,
     contents: prompt,
     config: buildConfig(opts),
   });
@@ -58,7 +67,7 @@ export async function* generateTextStream(
 ): AsyncGenerator<string, void, unknown> {
   const ai = getClient();
   const stream = await ai.models.generateContentStream({
-    model: MODEL,
+    model: opts?.model || MODEL,
     contents: prompt,
     config: buildConfig(opts),
   });

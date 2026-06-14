@@ -35,20 +35,23 @@ export async function streamKnowledgeAnswer(
   }
 
   // 2) 軽量AIストリーム
-  const prompt =
-    ASSISTANT_PERSONA +
-    "\n" +
-    "ご応募者様からの質問・相談に、下記ナレッジを参考に丁寧な敬語で簡潔に回答してください。\n" +
-    "ナレッジに無い内容は推測せず、『恐れ入りますが、その点は採用担当者より追ってご回答いたします』と伝えてください。\n" +
-    "前置き・記号・引用符・コードフェンスは付けないでください。\n\n" +
-    `（参考）現在の質問: ${args.currentQuestion}\n` +
-    `ご応募者様の入力: ${args.userText}\n\n` +
-    "【ナレッジ】\n" +
-    knowledgeForPrompt();
+    const prompt =
+      ASSISTANT_PERSONA +
+      "\n" +
+      "相談者様からの質問・相談に、下記ナレッジを土台に、丁寧で親身な敬語で自然に回答してください。\n" +
+      "・ナレッジはそのまま読み上げず、相手の言葉や文脈に合わせて自然な言い回しに変えて構いません。\n" +
+      "・ナレッジに直接書かれていなくても、一般的に説明できる範囲なら簡潔にお答えして構いません。\n" +
+      "・具体的な社内情報が本当に無い場合のみ、最後に『詳しくは採用担当者より改めてご案内します』と一言添えてください（毎回は不要です）。\n" +
+      "・前置き・記号・引用符・コードフェンスは付けないでください。\n\n" +
+      `（参考）現在の問い: ${args.currentQuestion}\n` +
+      `相談者様の入力: ${args.userText}\n\n` +
+      "【ナレッジ】\n" +
+      knowledgeForPrompt();
 
   const r = await runStream("answer", "answer", prompt, onDelta, {
     maxOutputTokens: 256,
     temperature: 0.3,
+    thinkingBudget: 0, // 思考オフ＝最速（FAQベースの短文回答）
     timeoutMs: Number(process.env.AI_TIMEOUT_ANSWER_MS ?? "10000"),
   });
 

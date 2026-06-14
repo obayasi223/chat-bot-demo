@@ -23,19 +23,20 @@ const state: any = blankState();
 
 // 開始
 const intro = startFlow(state);
-assert(intro.includes("採用エントリー"), "introにあいさつが含まれる");
+assert(intro.includes("IBM"), "introにあいさつが含まれる");
 assert(state.mode === "collecting", "開始後 mode=collecting");
 assert(state.currentIndex === 0, "開始後 index=0");
 
-// 7問に順番に回答
+// 8問に順番に回答
 const answers = [
   "山田太郎",
-  "フロントエンドエンジニア",
-  "受託開発で5年、ReactとTypeScriptを中心にSPAを設計・実装してきました",
-  "React, TypeScript, Next.js, Tailwind, Playwright",
-  "御社のプロダクトのUX水準が高く、自分の設計力を活かして貢献したいからです",
-  "リモート可・東京近郊、年収600万円〜、来月から入社可能",
-  "個人開発でOSSを公開しています",
+  "社会人で転職を検討中です",
+  "知人がIBMで働いていて、規模の大きな仕事に惹かれました",
+  "社会に影響のある仕事に、長く腰を据えて取り組みたいです",
+  "受託開発で5年、ReactとTypeScriptでSPAを設計・実装してきました",
+  "大企業で自分の裁量が限られないか、少し不安に感じています",
+  "リモート可・東京近郊、チームで協力しながら進めたいです",
+  "特になし",
 ];
 
 let last = "";
@@ -44,17 +45,17 @@ for (let i = 0; i < answers.length; i++) {
 }
 
 assert(state.mode === "done", "全問回答で mode=done");
-assert(last.includes("【ヒアリング内容のまとめ】"), "最後にサマリが出る");
+assert(last.includes("【ご回答内容】"), "最後にサマリが出る");
 assert(last.includes("山田太郎"), "サマリに氏名が含まれる");
-assert(Object.keys(state.answers).length === 7, "回答が7件保存される");
+assert(Object.keys(state.answers).length === 8, "回答が8件保存される");
 
 // 完了後にもう一度送ると完了案内
 const afterDone = await turn(state, "こんにちは");
-assert(afterDone.includes("完了しています"), "完了後は完了案内を返す");
+assert(afterDone.includes("完了"), "完了後は完了案内を返す");
 
 // リセット
 const afterReset = await turn(state, RESET_COMMAND);
-assert(afterReset.includes("採用エントリー"), "リセットでintroに戻る");
+assert(afterReset.includes("IBM"), "リセットでintroに戻る");
 assert(state.currentIndex === 0 && state.mode === "collecting", "リセットで状態が初期化");
 
 console.log("\n🎉 全テスト通過");

@@ -1,23 +1,31 @@
 // lib/aiDeepen.ts
-// AI深掘り：回答が薄いとき、追加で1つだけ質問を作る。
+// AI深掘り：回答から「情報が十分に取れたか」を推定し、足りなければ自然な追加質問を作る。
+// 速度より「推測の確かさ」と「自然さ」を優先し、構造化JSONで一度に判定する:
+//   - enough  : 本人を理解するのに十分か（= 十分性の推測結果）
+//   - reflect : 相手の回答に触れた短い相づち・共感（自然な質疑のための“傾聴”）
+//   - ask     : 不足時の追加質問（reflect を踏まえた具体的な問い）
 // AI呼び出しは harness（サーキット＋タイムアウト＋テレメトリ）経由に統一。
-import { runText, runStream } from "./harness/aiRuntime";
-
-export type DeepenResult = {
-  needFollowup: boolean;
-  question?: string;
-};
-
-/** 回答が十分なときにAIが先頭に出力するマーカー */
-const SUFFICIENT_MARK = "[OK]";
+import { runText } from "./harness/aiRuntime";
+import { ASSISTANT_PERSONA } from "./knowledge";
 
 const DEEPEN_TIMEOUT_MS = Number(process.env.AI_TIMEOUT_DEEPEN_MS ?? "12000");
+
+/** 回答の十分さ判定＋自然な反応の生成結果 */
+export type AssessResult = {
+  /** 本人を理解するのに十分な情報が取れたか（= 十分性の推測） */
+  enough: boolean;
+  /** 相手の回答に触れた短い相づち・共感（無ければ空文字） */
+  reflect: string;
+  /** 不足時の追加質問（enough=true なら空文字） */
+  question: string;
+  /** どこで判定したか（テレメトリ用） */
+  source: "ai" | "fallback";
+};
 
 /** ```json ... ``` などを剥がして最初のJSONオブジェクトを取り出す */
 function parseJsonLoose(text: string): any | null {
   const t = String(text ?? "").trim();
   if (!t) return null;
-  // コードフェンス除去
   const unfenced = t.replace(/^```(?:json)?/i, "").replace(/```$/i, "").trim();
   const start = unfenced.indexOf("{");
   const end = unfenced.lastIndexOf("}");
@@ -30,8 +38,85 @@ function parseJsonLoose(text: string): any | null {
 }
 
 /**
- * 直前の回答を見て、評価に足りなければ追加質問を1つ作る。
- * - Gemini 未設定／失敗時は needFollowup:false（=固定フローのみで進行）
+ * 1スロット分のやりとりを読み、情報が十分に取れたかを推定する。
+ * - AI未設定／失敗時は { enough:true, source:"fallback" }（=固定フローで前進）。
+ *   ※ 無理に掘らず、確実に会話を進めることを優先する。
+ *
+ * @param questionLabel いま尋ねている問い
+ * @param transcript    このスロットのこれまでのやりとり（回答＋深掘りQ&A）
+ * @param round         すでに出した深掘り質問の回数（0始まり）
+ * @param maxRounds     深掘りの上限回数
+ */
+export async function assessAnswer(args: {
+  questionLabel: string;
+  transcript: string;
+  round: number;
+  maxRounds: number;
+}): Promise<AssessResult> {
+  const transcript = String(args.transcript ?? "").trim();
+  if (!transcript) {
+    return { enough: true, reflect: "", question: "", source: "fallback" };
+  }
+
+  const remaining = Math.max(0, args.maxRounds - args.round);
+  // 上限に達していたら、これ以上は掘らない方針をAIにも伝える。
+  const depthHint =
+    remaining <= 0
+      ? "すでに十分に伺っています。これ以上は掘り下げず、必ず enough=true としてください。"
+      : `深掘りはあと${remaining}回までです。十分に語られていれば無理に掘らず enough=true としてください。`;
+
+  const prompt =
+    ASSISTANT_PERSONA +
+    "\n" +
+    "以下は、IBMへの入社を迷っている方へのヒアリングの一場面です。\n" +
+    "「問い」と「これまでのやりとり」を読み、相談者ご本人の考え・気持ち・背景が、" +
+    "その方を理解するうえで十分に具体的に語られているかを判断してください。\n" +
+    "具体的な経験・理由・気持ちが一つでも語られていれば、基本は enough=true としてください。" +
+    "enough=false にするのは、回答が明らかに曖昧・ごく短い・抽象的で、ほとんど中身が読み取れない場合に限ります。\n" +
+    depthHint +
+    "\n" +
+    "不足している場合は、これまでの内容に触れながら、もう一歩だけ自然に掘り下げる" +
+    "追加質問を1つ作ってください（決めつけず、寄り添う敬語で）。\n\n" +
+    `問い: ${args.questionLabel}\n` +
+    "これまでのやりとり:\n" +
+    transcript +
+    "\n\n" +
+    "次の JSON 形式【のみ】で答えてください（前後に説明文やコードフェンスを付けない）:\n" +
+    '{"enough": true または false, ' +
+    '"reflect": "相手の回答に触れた短い相づち・共感（1文・敬語）", ' +
+    '"ask": "追加質問。enoughがtrueなら空文字"}';
+
+  const r = await runText("deepen", "deepen", prompt, {
+    maxOutputTokens: 240,
+    temperature: 0.4,
+    thinkingBudget: 0, // 思考オフ＝最速
+    timeoutMs: DEEPEN_TIMEOUT_MS,
+  });
+  if (!r.ok) return { enough: true, reflect: "", question: "", source: "fallback" };
+
+  const json = parseJsonLoose(r.value);
+  if (!json) return { enough: true, reflect: "", question: "", source: "fallback" };
+
+  const enough = json.enough === true;
+  const reflect = String(json.reflect ?? "").trim();
+  const question = String(json.ask ?? "").trim();
+
+  // 上限到達後は掘らない／enough=false なのに質問が空なら掘れないので前進。
+  if (remaining <= 0) return { enough: true, reflect, question: "", source: "ai" };
+  if (!enough && !question) return { enough: true, reflect, question: "", source: "ai" };
+
+  return { enough, reflect, question, source: "ai" };
+}
+
+// --- 以下は非ストリーム版 handleTurn（レガシー）用の簡易判定 ---
+
+export type DeepenResult = {
+  needFollowup: boolean;
+  question?: string;
+};
+
+/**
+ * レガシー（handleTurn）向け：assessAnswer をラップして従来の戻り値に合わせる。
  */
 export async function proposeFollowup(args: {
   questionLabel: string;
@@ -39,110 +124,12 @@ export async function proposeFollowup(args: {
 }): Promise<DeepenResult> {
   const answer = String(args.answer ?? "").trim();
   if (!answer) return { needFollowup: false };
-
-  const prompt =
-    "あなたは丁寧で簡潔な採用担当者です。ご応募者様への事前ご案内を行っています。\n" +
-    "以下の「質問」と「ご応募者様の回答」を読み、選考を進めるうえで具体性が十分か判断してください。\n" +
-    "不足している場合は、より具体的な情報（実績・数字・役割・期間・背景など）をお伺いする追加質問を1つだけ、" +
-    "丁寧な敬語で短く作ってください。十分なら追加質問は不要です。\n\n" +
-    `質問: ${args.questionLabel}\n` +
-    `ご応募者様の回答: ${answer}\n\n` +
-    "次のJSON形式【のみ】で答えてください（前後に説明文やコードフェンスを付けない）:\n" +
-    '{"needFollowup": true または false, "question": "追加質問。needFollowupがfalseなら空文字"}';
-
-  const r = await runText("deepen", "deepen", prompt, {
-    maxOutputTokens: 200,
-    temperature: 0.3,
-    timeoutMs: DEEPEN_TIMEOUT_MS,
+  const a = await assessAnswer({
+    questionLabel: args.questionLabel,
+    transcript: `回答: ${answer}`,
+    round: 0,
+    maxRounds: 1,
   });
-  if (!r.ok) return { needFollowup: false };
-
-  const json = parseJsonLoose(r.value);
-  if (!json) return { needFollowup: false };
-  const need = json.needFollowup === true;
-  const q = String(json.question ?? "").trim();
-  if (need && q) return { needFollowup: true, question: q };
+  if (!a.enough && a.question) return { needFollowup: true, question: a.question };
   return { needFollowup: false };
-}
-
-/**
- * ストリーミング版の深掘り判定。
- * AIの「出力そのもの」で必要性を自動判定する（streamingオプション活用）:
- *   - 回答が十分なら、AIは先頭に `[OK]` だけを出力する → needFollowup:false
- *   - 不足なら、追加質問の本文をそのまま出力する → その差分を onDelta で逐次返す
- * 先頭トークンだけ見れば「掘る/掘らない」を判断できるので最速。
- * Gemini 未設定／失敗時は needFollowup:false。
- */
-export async function streamFollowup(
-  args: { questionLabel: string; answer: string },
-  onDelta: (text: string) => void
-): Promise<DeepenResult> {
-  const answer = String(args.answer ?? "").trim();
-  if (!answer) return { needFollowup: false };
-
-  const prompt =
-    "あなたは丁寧で簡潔な採用担当者です。ご応募者様への事前ご案内を行っています。\n" +
-    "以下の「質問」と「ご応募者様の回答」を読み、選考を進めるうえで具体性が十分か判断してください。\n" +
-    "・十分なら、最初に `[OK]` とだけ出力してください（他には何も書かない）。\n" +
-    "・不足なら、より具体的な情報（実績・数字・役割・期間・背景など）をお伺いする追加質問を" +
-    "1つだけ、丁寧な敬語で短く出力してください（前置き・記号・引用符・コードフェンスは付けない）。\n\n" +
-    `質問: ${args.questionLabel}\n` +
-    `ご応募者様の回答: ${answer}`;
-
-  let buf = "";
-  let decided: "ok" | "question" | null = null;
-  let questionText = "";
-
-  const emitQuestion = (s: string) => {
-    if (!s) return;
-    questionText += s;
-    onDelta(s);
-  };
-
-  // ハーネス経由でストリーム。マーカー検出は onDelta の中で行う。
-  const onDeltaMarker = (delta: string) => {
-    if (decided === "ok") return; // 判定済み（十分）。残りは捨てる
-    if (decided === "question") {
-      emitQuestion(delta);
-      return;
-    }
-    // --- 未判定：先頭が [OK] マーカーかどうかを見極める ---
-    buf += delta;
-    const trimmed = buf.trimStart();
-    if (trimmed.length === 0) return;
-    const upper = trimmed.toUpperCase();
-    if (SUFFICIENT_MARK.startsWith(upper) && upper.length < SUFFICIENT_MARK.length) {
-      return; // まだマーカーの途中かもしれない
-    }
-    if (upper.startsWith(SUFFICIENT_MARK)) {
-      decided = "ok";
-      return;
-    }
-    // マーカーではない → 追加質問の本文
-    decided = "question";
-    emitQuestion(buf);
-    buf = "";
-  };
-
-  const r = await runStream("deepen", "deepen", prompt, onDeltaMarker, {
-    maxOutputTokens: 120,
-    temperature: 0.3,
-    timeoutMs: DEEPEN_TIMEOUT_MS,
-  });
-  if (!r.ok) return { needFollowup: false };
-
-  if (decided === "ok") return { needFollowup: false };
-  if (decided === "question") {
-    const q = questionText.trim();
-    return q ? { needFollowup: true, question: q } : { needFollowup: false };
-  }
-
-  // 終了時もまだ未判定（極端に短い出力など）
-  const leftover = buf.trim();
-  if (!leftover) return { needFollowup: false };
-  if (leftover.toUpperCase().startsWith(SUFFICIENT_MARK)) {
-    return { needFollowup: false };
-  }
-  emitQuestion(buf);
-  return { needFollowup: true, question: leftover };
 }

@@ -15,9 +15,11 @@ export default function HearingPage() {
       }}
     >
       <header style={{ padding: "8px 4px 12px" }}>
-        <h1 style={{ fontSize: 18, fontWeight: 800 }}>採用エントリー 事前ご案内</h1>
+        <h1 style={{ fontSize: 18, fontWeight: 800 }}>
+          IBMで働くこと、一緒に考えるヒアリング
+        </h1>
         <p style={{ fontSize: 12, color: "#6b7280" }}>
-          ご応募にあたって、いくつかご質問させていただきます
+          入りたいか・合っていそうか、迷う気持ちを一緒に整理します
         </p>
       </header>
       <div style={{ flex: 1, minHeight: 0, paddingBottom: 12 }}>

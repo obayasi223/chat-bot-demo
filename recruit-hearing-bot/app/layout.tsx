@@ -2,8 +2,9 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "採用エントリー 事前ご案内",
-  description: "ご応募にあたっての事前ご案内を行うチャットフォーム",
+  title: "IBMで働くこと、一緒に考えるヒアリング",
+  description:
+    "IBMに入りたいか・自分に合っていそうか迷っている方の気持ちを、対話で一緒に整理するヒアリング",
 };
 
 export default function RootLayout({

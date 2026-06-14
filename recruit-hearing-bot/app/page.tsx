@@ -10,11 +10,11 @@ export default function Home() {
       }}
     >
       <h1 style={{ fontSize: 28, fontWeight: 800, marginBottom: 12 }}>
-        採用エントリー 事前ご案内
+        IBMで働くこと、一緒に考えてみませんか
       </h1>
       <p style={{ lineHeight: 1.7, color: "#374151", marginBottom: 24 }}>
-        ご応募にあたり、画面の案内に沿ってご質問にお答えください。
-        ご入力いただいた内容は、選考を進めるうえで担当者が確認いたします。
+        「IBMに入りたいか」「自分に合っていそうか」を迷っている方のためのヒアリングです。
+        合否を決めるものではありません。対話しながら、あなたの気持ちを一緒に整理していきましょう。
       </p>
       <Link
         href="/hearing"
@@ -28,7 +28,7 @@ export default function Home() {
           textDecoration: "none",
         }}
       >
-        ご案内を始める →
+        ヒアリングを始める →
       </Link>
     </main>
   );

@@ -5,6 +5,16 @@ const nextConfig: NextConfig = {
   turbopack: {
     root: __dirname,
   },
+  // ルート(/)はチャット画面(/hearing)へリダイレクト
+  async redirects() {
+    return [
+      {
+        source: "/",
+        destination: "/hearing",
+        permanent: false,
+      },
+    ];
+  },
 };
 
 export default nextConfig;
