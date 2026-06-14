@@ -19,7 +19,7 @@ export type Direction =
   | "PROCEED" // 回答として確定 → 保存・深掘り・前進
   | "ANSWER_QUESTION" // ナレッジ参照で回答 → 元の質問へ戻す
   | "CLARIFY" // 補足を促して同じ質問へ
-  | "FALLBACK"; // 担当者へ引き継ぎ → 元の質問へ戻す
+  | "FALLBACK"; // 無理に答えず → 元の質問へ戻す
 
 export type Classification = {
   vector: TurnVector;

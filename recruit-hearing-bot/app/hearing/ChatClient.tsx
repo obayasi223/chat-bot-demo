@@ -104,46 +104,134 @@ const STEP_LABEL: Record<string, string> = {
   axis: "就活の軸",
 };
 
-// スコア(0..1)に応じた色（緑=十分 / 橙=手薄 / 暗=未取得）。ダーク背景向け。
-function scoreColor(score: number, answered: boolean): string {
-  if (!answered || score <= 0) return "rgba(255,255,255,0.16)";
-  if (score >= 0.5) return "#34d399";
-  return "#fbbf24";
+// 会話フェーズの並び（flows.ts のスロット順と一致）
+const STEP_ORDER = [
+  "trigger",
+  "image",
+  "values",
+  "strengths",
+  "concerns",
+  "work_style",
+  "axis",
+];
+
+// サイドバーの縦型ステッパー（全体の流れと現在地を可視化）
+function Stepper({
+  currentKey,
+  isDone,
+}: {
+  currentKey: string | null;
+  isDone: boolean;
+}) {
+  const idx = isDone
+    ? STEP_ORDER.length
+    : currentKey
+    ? Math.max(0, STEP_ORDER.indexOf(currentKey))
+    : 0;
+
+  return (
+    <div className="sidebar-detail" style={{ display: "flex", flexDirection: "column" }}>
+      <div
+        style={{
+          fontSize: 12,
+          fontWeight: 600,
+          letterSpacing: "0.06em",
+          textTransform: "uppercase",
+          color: "#8d8d8d",
+          marginBottom: 14,
+        }}
+      >
+        対話の流れ
+      </div>
+      {STEP_ORDER.map((k, i) => {
+        const done = isDone || i < idx;
+        const current = !isDone && i === idx;
+        const color = current ? "#ffffff" : done ? "#c6c6c6" : "#6f6f6f";
+        return (
+          <div
+            key={k}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 12,
+              padding: "7px 0",
+            }}
+          >
+            <span
+              style={{
+                width: 24,
+                height: 24,
+                flexShrink: 0,
+                display: "grid",
+                placeItems: "center",
+                fontSize: 12,
+                fontWeight: 600,
+                color: current ? "#ffffff" : done ? "#0f62fe" : "#8d8d8d",
+                background: current ? "#0f62fe" : "transparent",
+                border: current
+                  ? "1px solid #0f62fe"
+                  : done
+                  ? "1px solid #0f62fe"
+                  : "1px solid #393939",
+              }}
+            >
+              {done ? "✓" : i + 1}
+            </span>
+            <span
+              style={{
+                fontSize: 14,
+                fontWeight: current ? 600 : 400,
+                color,
+              }}
+            >
+              {STEP_LABEL[k]}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
-// サイドバー用の円形プログレス（conic-gradient）
+// スコア(0..1)に応じた色（緑=十分 / 黄=手薄 / 暗=未取得）。Carbon配色。
+function scoreColor(score: number, answered: boolean): string {
+  if (!answered || score <= 0) return "#393939";
+  if (score >= 0.5) return "#42be65";
+  return "#f1c21b";
+}
+
+// サイドバー用の円形プログレス（フラットなリング）
 function ProgressRing({ pct, isDone }: { pct: number; isDone: boolean }) {
-  const ring = isDone ? "#34d399" : "#4589ff";
+  const ring = isDone ? "#42be65" : "#4589ff";
   return (
     <div
       style={{
         position: "relative",
-        width: 108,
-        height: 108,
+        width: 116,
+        height: 116,
         borderRadius: "50%",
-        background: `conic-gradient(${ring} ${pct * 3.6}deg, rgba(255,255,255,0.10) 0deg)`,
+        background: `conic-gradient(${ring} ${pct * 3.6}deg, #393939 0deg)`,
         display: "grid",
         placeItems: "center",
         flexShrink: 0,
-        boxShadow: `0 0 0 1px rgba(255,255,255,0.06), 0 8px 24px rgba(69,137,255,0.18)`,
       }}
     >
       <div
         style={{
-          width: 82,
-          height: 82,
+          width: 88,
+          height: 88,
           borderRadius: "50%",
-          background: "#0c1526",
+          background: "#161616",
           display: "grid",
           placeItems: "center",
         }}
       >
         <div style={{ textAlign: "center", lineHeight: 1 }}>
-          <div style={{ fontSize: 24, fontWeight: 800, color: "#fff" }}>
+          <div style={{ fontSize: 30, fontWeight: 600, color: "#ffffff" }}>
             {pct}
-            <span style={{ fontSize: 12, marginLeft: 1 }}>%</span>
+            <span style={{ fontSize: 15, marginLeft: 1 }}>%</span>
           </div>
-          <div style={{ fontSize: 10, color: "#8aa0c4", marginTop: 4 }}>
+          <div style={{ fontSize: 12, color: "#a8a8a8", marginTop: 6 }}>
             {isDone ? "完了" : "進行中"}
           </div>
         </div>
@@ -165,57 +253,50 @@ function CoveragePanel({ coverage }: { coverage: Coverage | null }) {
   return (
     <div
       style={{
-        border: "1px solid rgba(255,255,255,0.08)",
-        borderRadius: 14,
-        padding: "14px 14px",
-        background: "rgba(255,255,255,0.04)",
+        borderTop: "1px solid #393939",
+        paddingTop: 20,
       }}
     >
       <div
         style={{
           display: "flex",
           justifyContent: "space-between",
-          alignItems: "baseline",
-          marginBottom: 12,
+          alignItems: "center",
+          marginBottom: 16,
         }}
       >
         <span
           style={{
-            fontSize: 11,
-            fontWeight: 800,
-            letterSpacing: "0.08em",
-            color: "#9fb4d6",
+            fontSize: 12,
+            fontWeight: 600,
+            letterSpacing: "0.06em",
+            textTransform: "uppercase",
+            color: "#8d8d8d",
           }}
         >
           観点バランス
         </span>
         <span
           style={{
-            fontSize: 10,
-            fontWeight: 700,
-            padding: "2px 8px",
-            borderRadius: 999,
-            border: coverage.balanced
-              ? "1px solid rgba(52,211,153,0.4)"
-              : "1px solid rgba(251,191,36,0.4)",
-            background: coverage.balanced
-              ? "rgba(52,211,153,0.12)"
-              : "rgba(251,191,36,0.12)",
-            color: coverage.balanced ? "#6ee7b7" : "#fcd34d",
+            fontSize: 12,
+            fontWeight: 500,
+            padding: "2px 10px",
+            borderLeft: `2px solid ${coverage.balanced ? "#42be65" : "#f1c21b"}`,
+            color: coverage.balanced ? "#42be65" : "#f1c21b",
           }}
         >
           {coverage.balanced ? "バランス良好" : "偏りあり"}
         </span>
       </div>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         {coverage.axes.map((a) => (
-          <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <span
               style={{
-                fontSize: 11,
-                color: "#aebfda",
-                width: 76,
+                fontSize: 13,
+                color: "#c6c6c6",
+                width: 84,
                 flexShrink: 0,
                 whiteSpace: "nowrap",
                 overflow: "hidden",
@@ -229,8 +310,7 @@ function CoveragePanel({ coverage }: { coverage: Coverage | null }) {
               style={{
                 flex: 1,
                 height: 6,
-                background: "rgba(255,255,255,0.08)",
-                borderRadius: 999,
+                background: "#393939",
                 overflow: "hidden",
               }}
             >
@@ -239,7 +319,6 @@ function CoveragePanel({ coverage }: { coverage: Coverage | null }) {
                   height: "100%",
                   width: `${Math.round(a.score * 100)}%`,
                   background: scoreColor(a.score, a.answered),
-                  borderRadius: 999,
                   transition: "width 320ms ease",
                 }}
               />
@@ -248,7 +327,7 @@ function CoveragePanel({ coverage }: { coverage: Coverage | null }) {
         ))}
       </div>
 
-      <div style={{ marginTop: 12, fontSize: 10, color: "#7e93b8" }}>
+      <div style={{ marginTop: 16, fontSize: 12, color: "#8d8d8d" }}>
         充足度 {covPct}% ・ 均等度 {evenPct}%
         {!coverage.balanced && weakest && weakest.score < 0.5 && (
           <span>　/　手薄: {weakest.label}</span>
@@ -452,76 +531,60 @@ export default function ChatClient() {
     <div className="app-shell">
       {/* ===== 左：ダッシュボード ===== */}
       <aside className="app-sidebar">
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 12,
-          }}
-        >
-          <div
+        <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
+          <span
             style={{
-              width: 40,
-              height: 40,
-              borderRadius: 11,
-              background: "linear-gradient(135deg,#0f62fe,#4589ff)",
-              display: "grid",
-              placeItems: "center",
-              fontWeight: 900,
-              fontSize: 15,
+              fontSize: 18,
+              fontWeight: 700,
               letterSpacing: "0.04em",
-              color: "#fff",
-              boxShadow: "0 6px 16px rgba(15,98,254,0.4)",
+              color: "#0f62fe",
               flexShrink: 0,
             }}
           >
             IBM
-          </div>
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 14, fontWeight: 800, color: "#fff" }}>
-              就活の軸を深める対話
-            </div>
-            <div style={{ fontSize: 11, color: "#8aa0c4" }}>
-              Career Axis Studio
-            </div>
-          </div>
+          </span>
+          <span style={{ fontSize: 16, fontWeight: 600, color: "#fff" }}>
+            就活の軸を深める対話
+          </span>
         </div>
 
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 16,
-          }}
-        >
+        <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
           <ProgressRing pct={pct} isDone={isDone} />
           <div className="sidebar-detail" style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 12, color: "#8aa0c4" }}>現在のステップ</div>
             <div
               style={{
-                fontSize: 16,
-                fontWeight: 800,
+                fontSize: 12,
+                color: "#8d8d8d",
+                textTransform: "uppercase",
+                letterSpacing: "0.06em",
+              }}
+            >
+              現在のステップ
+            </div>
+            <div
+              style={{
+                fontSize: 20,
+                fontWeight: 600,
                 color: "#fff",
-                marginTop: 2,
+                marginTop: 4,
               }}
             >
               {stepLabel ?? (isDone ? "まとめ" : "—")}
             </div>
-            <div style={{ fontSize: 11, color: "#9fb4d6", marginTop: 4 }}>
+            <div style={{ fontSize: 14, color: "#c6c6c6", marginTop: 6 }}>
               {stepText}
             </div>
             {progress.inFollowup && !isDone && (
               <span
                 style={{
                   display: "inline-block",
-                  marginTop: 8,
-                  padding: "3px 9px",
-                  borderRadius: 999,
+                  marginTop: 12,
+                  padding: "3px 10px",
                   background: "rgba(69,137,255,0.16)",
-                  color: "#9ec1ff",
-                  border: "1px solid rgba(69,137,255,0.35)",
-                  fontSize: 10,
-                  fontWeight: 700,
+                  color: "#a6c8ff",
+                  borderLeft: "2px solid #4589ff",
+                  fontSize: 13,
+                  fontWeight: 500,
                 }}
               >
                 深掘り中
@@ -529,6 +592,8 @@ export default function ChatClient() {
             )}
           </div>
         </div>
+
+        <Stepper currentKey={progress.currentKey} isDone={isDone} />
 
         <div className="sidebar-detail">
           <CoveragePanel coverage={progress.coverage} />
@@ -540,20 +605,16 @@ export default function ChatClient() {
             style={{
               display: "flex",
               alignItems: "flex-start",
-              gap: 8,
-              padding: "10px 12px",
-              borderRadius: 12,
-              background: "rgba(251,191,36,0.10)",
-              border: "1px solid rgba(251,191,36,0.3)",
-              color: "#fcd34d",
-              fontSize: 11,
-              lineHeight: 1.5,
+              gap: 10,
+              padding: "12px 14px",
+              background: "rgba(241,194,27,0.10)",
+              borderLeft: "2px solid #f1c21b",
+              color: "#f1c21b",
+              fontSize: 13,
+              lineHeight: 1.6,
             }}
             role="status"
           >
-            <span aria-hidden style={{ fontWeight: 800 }}>
-              !
-            </span>
             <span>
               {progress.aiReason === "no_key"
                 ? "AI応答は現在オフです。定型のご質問でお伺いします（回答は記録されます）。"
@@ -563,14 +624,6 @@ export default function ChatClient() {
         )}
 
         <div className="sidebar-spacer" style={{ flex: 1 }} />
-
-        <p
-          className="sidebar-detail"
-          style={{ fontSize: 11, color: "#6f84a8", lineHeight: 1.6, margin: 0 }}
-        >
-          合否を決めるものではありません。気になることはいつでも質問でき、
-          途中の感覚のままでも大丈夫です。
-        </p>
       </aside>
 
       {/* ===== 右：チャット ===== */}
@@ -581,33 +634,22 @@ export default function ChatClient() {
               display: "flex",
               justifyContent: "space-between",
               alignItems: "baseline",
-              marginBottom: 8,
+              marginBottom: 10,
             }}
           >
-            <span style={{ fontSize: 13, fontWeight: 800, color: "#0f172a" }}>
+            <span style={{ fontSize: 17, fontWeight: 600, color: "#161616" }}>
               {isDone ? "対話が完了しました" : stepLabel ?? "IBM理解と就活の軸を深める対話"}
             </span>
-            <span style={{ fontSize: 12, color: "#64748b", fontWeight: 700 }}>
+            <span style={{ fontSize: 14, color: "#525252", fontWeight: 500 }}>
               {pct}%
             </span>
           </div>
-          <div
-            style={{
-              height: 6,
-              width: "100%",
-              background: "#e6e9f0",
-              borderRadius: 999,
-              overflow: "hidden",
-            }}
-          >
+          <div style={{ height: 4, width: "100%", background: "#e0e0e0" }}>
             <div
               style={{
                 height: "100%",
                 width: `${pct}%`,
-                background: isDone
-                  ? "linear-gradient(90deg,#22c55e,#34d399)"
-                  : "linear-gradient(90deg,#0f62fe,#4589ff)",
-                borderRadius: 999,
+                background: isDone ? "#24a148" : "#0f62fe",
                 transition: "width 320ms ease",
               }}
             />
@@ -616,61 +658,51 @@ export default function ChatClient() {
 
         <div ref={scrollRef} className="chat-scroll">
           <div className="chat-inner">
+            <div
+              style={{
+                borderLeft: "2px solid #0f62fe",
+                padding: "2px 0 2px 14px",
+                color: "#6f6f6f",
+                fontSize: 13,
+                lineHeight: 1.7,
+              }}
+            >
+              IBMを知りながら、あなたの「就活の軸」を一緒に言葉にする対話。
+            </div>
             {messages.map((m) =>
               m.role === "bot" && m.text === "" ? null : (
                 <div
                   key={m.id}
                   style={{
                     display: "flex",
-                    gap: 10,
-                    alignItems: "flex-start",
-                    justifyContent:
+                    flexDirection: "column",
+                    alignItems:
                       m.role === "user" ? "flex-end" : "flex-start",
                   }}
                 >
-                  {m.role === "bot" && (
-                    <div
-                      style={{
-                        width: 30,
-                        height: 30,
-                        borderRadius: 9,
-                        flexShrink: 0,
-                        background: "linear-gradient(135deg,#0f62fe,#4589ff)",
-                        color: "#fff",
-                        display: "grid",
-                        placeItems: "center",
-                        fontSize: 11,
-                        fontWeight: 800,
-                        marginTop: 2,
-                      }}
-                    >
-                      AI
-                    </div>
-                  )}
+                  <span
+                    style={{
+                      fontSize: 12,
+                      fontWeight: 600,
+                      letterSpacing: "0.04em",
+                      color: m.role === "user" ? "#0f62fe" : "#6f6f6f",
+                      marginBottom: 6,
+                      padding: "0 2px",
+                    }}
+                  >
+                    {m.role === "user" ? "あなた" : "アシスタント"}
+                  </span>
                   <div
                     style={{
-                      maxWidth: "78%",
-                      padding: "12px 15px",
-                      borderRadius:
-                        m.role === "user"
-                          ? "16px 6px 16px 16px"
-                          : "6px 16px 16px 16px",
-                      border:
-                        m.role === "user"
-                          ? "none"
-                          : "1px solid #e6e9f0",
-                      background:
-                        m.role === "user"
-                          ? "linear-gradient(135deg,#0f62fe,#4589ff)"
-                          : "#ffffff",
-                      color: m.role === "user" ? "#fff" : "#0f172a",
+                      maxWidth: "84%",
+                      padding: "14px 18px",
+                      borderRadius: 8,
+                      border: "none",
+                      background: m.role === "user" ? "#0f62fe" : "#f2f4f8",
+                      color: m.role === "user" ? "#ffffff" : "#161616",
                       whiteSpace: "pre-wrap",
-                      lineHeight: 1.7,
-                      fontSize: 14,
-                      boxShadow:
-                        m.role === "user"
-                          ? "0 6px 16px rgba(15,98,254,0.22)"
-                          : "0 1px 2px rgba(16,24,40,0.05)",
+                      lineHeight: 1.8,
+                      fontSize: 16,
                     }}
                   >
                     {m.text}
@@ -682,28 +714,21 @@ export default function ChatClient() {
               <div
                 style={{
                   display: "flex",
-                  gap: 10,
                   alignItems: "center",
-                  color: "#94a3b8",
-                  fontSize: 13,
+                  gap: 8,
+                  color: "#6f6f6f",
+                  fontSize: 15,
                 }}
               >
-                <div
+                <span
                   style={{
-                    width: 30,
-                    height: 30,
-                    borderRadius: 9,
-                    background: "linear-gradient(135deg,#0f62fe,#4589ff)",
-                    color: "#fff",
-                    display: "grid",
-                    placeItems: "center",
-                    fontSize: 11,
-                    fontWeight: 800,
-                    opacity: 0.7,
+                    width: 8,
+                    height: 8,
+                    borderRadius: "50%",
+                    background: "#0f62fe",
+                    display: "inline-block",
                   }}
-                >
-                  AI
-                </div>
+                />
                 回答を作成しています…
               </div>
             )}
@@ -715,13 +740,12 @@ export default function ChatClient() {
             {warning && (
               <div
                 style={{
-                  padding: "10px 12px",
-                  marginBottom: 10,
-                  border: "1px solid #fca5a5",
-                  borderRadius: 12,
-                  background: "#fef2f2",
-                  color: "#b91c1c",
-                  fontSize: 13,
+                  padding: "12px 14px",
+                  marginBottom: 12,
+                  borderLeft: "2px solid #da1e28",
+                  background: "#fff1f1",
+                  color: "#a2191f",
+                  fontSize: 14,
                 }}
               >
                 {warning}
@@ -730,13 +754,10 @@ export default function ChatClient() {
             <div
               style={{
                 display: "flex",
-                gap: 10,
-                alignItems: "flex-end",
-                background: isDone ? "#f3f4f6" : "#fff",
-                border: "1px solid #d7dce5",
-                borderRadius: 16,
-                padding: 8,
-                boxShadow: "0 2px 10px rgba(16,24,40,0.04)",
+                gap: 0,
+                alignItems: "stretch",
+                background: isDone ? "#f4f4f4" : "#fff",
+                border: "1px solid #8d8d8d",
               }}
             >
               <textarea
@@ -758,16 +779,16 @@ export default function ChatClient() {
                 style={{
                   flex: 1,
                   resize: "none",
-                  padding: "8px 10px",
+                  padding: "14px 16px",
                   border: "none",
                   outline: "none",
                   background: "transparent",
-                  color: "#0f172a",
-                  fontSize: 14,
+                  color: "#161616",
+                  fontSize: 16,
                   lineHeight: 1.6,
                   fontFamily: "inherit",
-                  maxHeight: 160,
-                  minHeight: 24,
+                  maxHeight: 180,
+                  minHeight: 28,
                 }}
               />
               <button
@@ -775,15 +796,13 @@ export default function ChatClient() {
                 onClick={() => canSend && send(input)}
                 disabled={!canSend}
                 style={{
-                  padding: "10px 18px",
-                  borderRadius: 12,
+                  padding: "0 28px",
                   border: "none",
-                  background: canSend
-                    ? "linear-gradient(135deg,#0f62fe,#4589ff)"
-                    : "#e5e7eb",
-                  color: canSend ? "#fff" : "#9ca3af",
+                  background: canSend ? "#0f62fe" : "#c6c6c6",
+                  color: "#ffffff",
                   cursor: canSend ? "pointer" : "default",
-                  fontWeight: 800,
+                  fontWeight: 600,
+                  fontSize: 16,
                   whiteSpace: "nowrap",
                   flexShrink: 0,
                 }}
@@ -794,10 +813,10 @@ export default function ChatClient() {
 
             <div
               style={{
-                marginTop: 10,
+                marginTop: 12,
                 display: "flex",
                 justifyContent: "space-between",
-                gap: 8,
+                gap: 10,
               }}
             >
               <button
@@ -809,14 +828,13 @@ export default function ChatClient() {
                 disabled={busy || isDone}
                 title="この質問に答えにくい場合や、特になしの場合に次へ進みます"
                 style={{
-                  padding: "7px 13px",
-                  borderRadius: 10,
-                  border: "1px solid #d7dce5",
-                  background: busy || isDone ? "#f3f4f6" : "#fff",
-                  color: busy || isDone ? "#9ca3af" : "#475569",
+                  padding: "9px 16px",
+                  border: "1px solid #8d8d8d",
+                  background: busy || isDone ? "#f4f4f4" : "#fff",
+                  color: busy || isDone ? "#a8a8a8" : "#393939",
                   cursor: busy || isDone ? "default" : "pointer",
-                  fontSize: 13,
-                  fontWeight: 600,
+                  fontSize: 14,
+                  fontWeight: 500,
                 }}
               >
                 答えにくい・特になし
@@ -834,14 +852,13 @@ export default function ChatClient() {
                 }}
                 disabled={busy}
                 style={{
-                  padding: "7px 13px",
-                  borderRadius: 10,
-                  border: "1px solid #d7dce5",
+                  padding: "9px 16px",
+                  border: "1px solid #8d8d8d",
                   background: "#fff",
-                  color: "#475569",
+                  color: "#393939",
                   cursor: busy ? "default" : "pointer",
-                  fontSize: 13,
-                  fontWeight: 600,
+                  fontSize: 14,
+                  fontWeight: 500,
                 }}
               >
                 最初から入力し直す
